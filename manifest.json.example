@@ -1,0 +1,11 @@
+{
+    "run-stream-replay": {
+        "description": "Run strem-replay with default manifest file."        
+        "servier-commands: [ "" ],
+        "client-commands": [ "" ],
+        "parameters":
+
+        "format": "",
+        "output": {}
+    }
+}
