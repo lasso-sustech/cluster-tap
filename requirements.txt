@@ -1,1 +1,1 @@
-netifaces
+netifaces #required from client-side

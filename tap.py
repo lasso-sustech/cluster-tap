@@ -11,13 +11,14 @@ import struct
 import subprocess as sp
 import time
 import threading
-
+from queue import Queue
 
 SERVER_PORT = 11112
+IPC_PORT    = 52525
+
 GEN_TID = lambda _: ''.join([random.choice(string.ascii_letters) for _ in range(8)])
 SHELL_POPEN = lambda x: sp.Popen(x, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
 SHELL_RUN = lambda x: sp.run(x, stdout=sp.PIPE, stderr=sp.PIPE, check=True, shell=True)
-
 
 class SlaveDaemon:
     def __init__(self, manifest, s_port, s_ip=None):
@@ -120,28 +121,119 @@ class SlaveDaemon:
             ##
             result = self.handle_request(_msg['request'], _msg['args'])
             _msg = json.dumps(result).encode()
-            _len = len(_msg)
             ##
-            sock.send( struct.pack('I', _len) )
+            _len = struct.pack('I', len(_msg))
+            _msg = _len + _msg
             sock.send(_msg)
         pass
 
     pass
 
-def main():
-    parser = argparse.ArgumentParser(description='The slave program of cluster-tap.')
-    parser.add_argument('-c', '--master', type=str, nargs='?', help='(Optional) master address.')
-    parser.add_argument('-p', '--port', type=int, nargs='?', default=SERVER_PORT, help='(Optional) master port.')
-    args = parser.parse_args()
-    ##
+class MasterDaemon:
+    def __init__(self, port, tx, rx):
+        self.port = port
+        self.tx, self.rx = tx, rx
+        pass
+
+    def start(self):
+        pass
+    pass
+
+class IPCDaemon:
+    def __init__(self, port, tx, rx):
+        self.port = port
+        self.tx, self.rx = tx, rx
+        pass
+
+    def start(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('', self.port))
+        while True:
+            cmd, args = sock.recv(1024).decode().split(maxsplit=1)
+            params = dict([ params.split('=') for param in args.split('') ])
+    pass
+
+class Connector:
+    def __init__(self, client:str='', port=None):
+        self.client = client
+        self.port = port if port else IPC_PORT
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.connect(('', self.port))
+        pass
+
+    def describe(self):
+        return self.__send('describe')
+    
+    def info(self, function:str):
+        return self.__send('info', {'function':function})
+    
+    def execute(self, function, parameters:dict=None, timeout:float=None):
+        msg = {'function':function}
+        if parameters: msg['parameters'] = parameters
+        if timeout: msg['timeout'] = timeout
+        return self.__send('execute', msg)
+    
+    def fetch(self, tid):
+        return self.__send('fetch', {'tid':tid})
+
+    def __send(self, cmd, args): #FIXME: need also send client name
+        msg = {'request':cmd, 'args':args}
+        msg = json.dumps(msg).encode()
+        ##
+        _len = struct.pack('I', len(msg))
+        msg = _len+msg
+        self.sock.send(msg)
+        ##
+        _len = struct.unpack('I', self.sock.recv(4))
+        msg = self.sock.recv(_len).decode()
+        msg = json.loads(msg)
+        pass
+    
+    def __connect(self, client):
+        pass
+
+    pass
+
+
+    
+    pass
+
+def master_main(args):
+    req_q, res_q = Queue(), Queue()
+    master = MasterDaemon(args.port, res_q, req_q)
+    daemon = IPCDaemon(args.ipc_port, req_q, res_q)
+    master.start(); daemon.start()
+    pass
+
+def slave_main(args):
     try:
         manifest = open('./manifest.json')
         manifest = json.load( manifest )
     except:
         raise Exception('Client manifest file load failure.')
     ##
-    slave = SlaveDaemon(manifest, args.port, args.master)
+    slave = SlaveDaemon(manifest, args.port, args.client)
     slave.start()
+    pass
+
+def main():
+    parser = argparse.ArgumentParser(description='All-in-one cluster control tap.')
+    parser.add_argument('-p', '--port', type=int, nargs='?', default=SERVER_PORT, help='(Optional) server port.')
+    ##
+    s_group = parser.add_argument_group('Server specific')
+    s_group.add_argument('-s', '--server', action='store_true', help='run in server mode.')
+    s_group.add_argument('--ipc-port', type=int, nargs='?', default=IPC_PORT, help='(Optional) external IPC port.')
+    ##
+    c_group = parser.add_argument_group('Client specific')
+    c_group.add_argument('-c', '--client', type=str, default='', nargs='?', help='run in client mode.')
+    ##
+    args = parser.parse_args()
+    if args.client or args.client==None:
+        slave_main(args)
+    elif args.server:
+        master_main(args)
+    else:
+        print('Please specify client mode or server mode.')
     pass
 
 if __name__ == '__main__':
