@@ -19,6 +19,20 @@ GEN_TID = lambda _: ''.join([random.choice(string.ascii_letters) for _ in range(
 SHELL_POPEN = lambda x: sp.Popen(x, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
 SHELL_RUN = lambda x: sp.run(x, stdout=sp.PIPE, stderr=sp.PIPE, check=True, shell=True)
 
+def _recv(sock:socket.socket):
+    _len = struct.unpack('I', sock.recv(4))
+    _msg = sock.recv(_len).decode()
+    return json.loads(_msg)
+
+def _send(sock:socket.socket, msg):
+    _msg = json.dumps(msg).encode()
+    _len = struct.pack('I', len(_msg))
+    sock.send( _len + _msg )
+
+def _sync(sock:socket.socket, msg):
+    _send(sock, msg)
+    return _recv(sock)
+
 class SlaveDaemon:
     def __init__(self, manifest, s_port, s_ip=None):
         self.manifest = manifest
@@ -46,7 +60,7 @@ class SlaveDaemon:
         raise Exception('No master found.')
         pass
 
-    def execute(self, tid, fn, params, timeout):
+    def client_execute(self, tid, fn, params, timeout):
         try:
             config = self.manifest[fn]
             params = config['parameters'].update(params)
@@ -94,13 +108,13 @@ class SlaveDaemon:
                 params  = args['parameters'] if 'parameters' in args else {}
                 timeout = args['timeout'] if 'timeout' in args else -1
                 tid = GEN_TID()
-                _thread = threading.Thread(target=self.execute, args=(tid, args['function'], params, timeout)); _thread.start()
+                _thread = threading.Thread(target=self.client_execute, args=(tid, args['function'], params, timeout)); _thread.start()
                 self.tasks.update({ tid : {'handle':_thread, 'results':''} })
                 result = { 'tid': tid }
             elif request=='fetch' and 'tid' in args:
                 results = self.tasks[ args['tid'] ]['results']
                 if not results:
-                    raise Exception('Empty response.')
+                    raise Exception('Client: empty response.')
                 self.tasks[ args['tid'] ]['handle'].join()
             else:
                 raise Exception('Invalid Request.')
@@ -113,18 +127,15 @@ class SlaveDaemon:
     def start(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((self.s_ip, self.s_port))
+        ## initial register
+        msg = self.manifest['name']
+        _send(sock, msg)
+        print( f'Client "{msg}" is now on.' )
         ##
         while True:
-            _len = struct.unpack('I', sock.recv(4))
-            _msg = sock.recv(_len).decode()
-            _msg = json.loads(_msg)
-            ##
-            result = self.handle(_msg['request'], _msg['args'])
-            _msg = json.dumps(result).encode()
-            ##
-            _len = struct.pack('I', len(_msg))
-            _msg = _len + _msg
-            sock.send(_msg)
+            msg = _recv(sock)
+            res = self.handle(msg['request'], msg['args'])
+            _send(sock, res)
         pass
 
     pass
@@ -136,37 +147,111 @@ class MasterDaemon:
         self.clients = dict()
         pass
 
-    def execute(self):
+    def server_execute(self, tid, fn, params, timeout):
+        manifest = {} #FIXME: need to fetch client manifest ...
+        try:
+            config = manifest[fn]
+            params = config['parameters'].update(params)
+            commands = config['server-commands']
+            for i in range(len(commands)):
+                for k,v in params.items():
+                    commands[i].replace(f'${k}', v)
+            ##
+            _now = time.time()
+            processes = [ SHELL_POPEN(cmd) for cmd in commands ]
+            returns = [None]
+            while None in returns and time.time() - _now < timeout:
+                returns = [ proc.poll() for proc in processes ]
+                time.sleep(0.1)
+            ##
+            for i,ret in enumerate(returns):
+                if ret < 0:
+                    raise Exception( processes[i].stderr.decode() )
+            outputs = { f'$server_output_{i}':o.decode() for i,o in enumerate(processes.stdout) }
+            ##
+            results = dict()
+            for key,value in manifest['output'].items():
+                if value['exec']=='server':
+                    cmd = value['cmd']
+                    [ cmd.replace(k,o) for k,o in outputs.items() ]
+                ret = SHELL_RUN(cmd).stdout.decode()
+                ret = re.findall(value['format'], ret)[0]
+                results[key] = ret
+        except Exception as e:
+            self.tasks[tid]['results'] = str(e)
+        else:
+            self.tasks[tid]['results'] = results
         pass
 
-    def handle(self, conn, tx, rx):
+    def handle(self, name, conn, tx:Queue, rx:Queue):
+        tasks = dict()
+        try:
+            while True:
+                cmd, args = rx.get()
+                if cmd=='execute':
+                    _args = json.load(args)['args']
+                    params = args['parameters'] if 'parameters' in args else {}
+                    s_tid = GEN_TID()
+                    _thread = threading.Thread(target=self.server_execute, args=(s_tid, args['function'], params)); _thread.start()
+                    self.tasks.update({ s_tid : {'handle':_thread, 'results':''} })
+                    ##
+                    res = _sync(conn, args); tid = res['tid']
+                    self.tasks.update({ tid : s_tid })
+                    tx.put( res )
+                    pass
+                elif cmd=='fetch':
+                    _args = json.load(args); tid = _args['args']['tid']
+                    client_results = _sync(conn, args)
+                    ##
+                    s_tid = self.task[tid]
+                    server_results = self.tasks[s_tid]['results']
+                    if not server_results:
+                        raise Exception('Server: empty response.')
+                    self.tasks[tid]['handle'].join()
+                    ##
+                    tx.put({ **client_results, **server_results })
+                else:
+                    tx.put( _sync(conn, args) )
+        except Exception: #FIXME: maybe broken connection, or not
+            print(e)
+            print(f'Connection loss: {name}.')
+            self.clients.pop(name)
+        pass
+
+    def daemon(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('', self.ipc_port))
+        ##
+        while True:
+            msg, addr = sock.recvfrom(1024)
+            cmd, args = msg.decode().split(maxsplit=1)
+            cmd, client = cmd.split('@')
+            ## blocking-mode
+            if client=='' or cmd=='list_all':
+                res = { k:v['addr'] for k,v in self.clients.items() }
+            else:
+                self.clients[client]['tx'].put((cmd, args))
+                res = self.clients[client]['rx'].get()
+            res = json.dumps(res).encode()
+            sock.sendto(res, addr)
+            pass
         pass
 
     def serve(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(('0.0.0.0', self.port))
         sock.listen()
-
-        while True:
-            conn, addr = sock.accept()
-            tx, rx = Queue(), Queue()
-            handler = threading.Thread(target=self.handle, args=(conn, rx, tx))
-            self.client.update({
-                addr[0]:{'handler':handler,'conn':conn,'tx':tx,'rx':rx} })
-            handler.start()
-        pass
-
-    def daemon(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(('', self.ipc_port))
-        sock.setblocking(False)
         ##
         while True:
-            msg, addr = sock.recvfrom(1024)
-            cmd, args = msg.decode().split(maxsplit=1)
-            cmd, client = cmd.split('@')
+            ## initial register
+            conn, addr = sock.accept()
+            name = _recv(sock)
             ##
-            pass
+            tx, rx = Queue(), Queue()
+            handler = threading.Thread(target=self.handle, args=(name, conn, rx, tx))
+            self.client.update({
+                name:{'handler':handler,'conn':conn,'addr':addr,'tx':tx,'rx':rx} })
+            handler.start()
         pass
 
     def start(self):
@@ -186,7 +271,7 @@ class Connector:
         pass
 
     def list_all(self):
-        pass
+        return self.__send('list_all', '')
 
     def describe(self):
         return self.__send('describe', '')
@@ -205,17 +290,15 @@ class Connector:
 
     def __send(self, cmd, args:str):
         ## format: '<cmd>@<client> <args>'
-        ' '.join( f'{cmd}@{self.client}', json.dumps(args) )
+        args = {'request':cmd, 'args':args}
+        msg = ' '.join( f'{cmd}@{self.client}', json.dumps(args) )
         self.sock.send(msg)
         ##
-        msg = self.sock.recv().decode()
-        msg = json.loads(msg)
-        if msg['err']:
-            raise Exception(msg['err'])
-        else:
-            del msg['err']
-            return msg
-        pass
+        res = self.sock.recv().decode()
+        res = json.loads(res)
+        if 'err' in res:
+            raise Exception(res['err'])
+        return res
 
     pass
 
