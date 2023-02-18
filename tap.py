@@ -2,7 +2,6 @@
 import argparse
 import ipaddress
 import json
-import netifaces as ni
 import random
 import re
 import socket
@@ -29,16 +28,17 @@ class SlaveDaemon:
         pass
     
     def discover(self):
-        default_gateway = next(iter( ni.gateways()['default'] ))
-        _, iface_name = ni.gateways()['default'][default_gateway]
-        iface = ni.ifaddresses(iface_name)[default_gateway][0]
-        all_hosts = ipaddress.IPv4Network((iface['addr'], iface['netmask']), strict=False).hosts()
+        o = SHELL_RUN('ip route | grep default').stdout.decode()
+        iface_name = re.findall('default via (\S+) dev (\S+) .*', o)[0][1]
+        o = SHELL_RUN('ip addr').stdout.decode()
+        iface_network = re.findall(f'.+inet (\S+).+{iface_name}', o)[0]
+        all_hosts = ipaddress.IPv4Network(iface_network, strict=False).hosts()
         ##
         print(f'Auto-detect master over {iface_name} ...')
         for _,host in enumerate(all_hosts):
             s_ip = str(host)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.05)
+            sock.settimeout(0.1)
             if sock.connect_ex((s_ip, self.s_port)) == 0:
                 self.s_ip = s_ip
                 print(f'Find master on {s_ip}')
@@ -81,7 +81,7 @@ class SlaveDaemon:
             self.tasks[tid]['results'] = results
         pass
 
-    def handle_request(self, request, args):
+    def handle(self, request, args):
         result = dict()
         try:
             if request=='describe':
@@ -119,7 +119,7 @@ class SlaveDaemon:
             _msg = sock.recv(_len).decode()
             _msg = json.loads(_msg)
             ##
-            result = self.handle_request(_msg['request'], _msg['args'])
+            result = self.handle(_msg['request'], _msg['args'])
             _msg = json.dumps(result).encode()
             ##
             _len = struct.pack('I', len(_msg))
@@ -130,79 +130,98 @@ class SlaveDaemon:
     pass
 
 class MasterDaemon:
-    def __init__(self, port, tx, rx):
+    def __init__(self, port, ipc_port):
         self.port = port
-        self.tx, self.rx = tx, rx
+        self.ipc_port = ipc_port
+        self.clients = dict()
         pass
 
-    def start(self):
-        pass
-    pass
-
-class IPCDaemon:
-    def __init__(self, port, tx, rx):
-        self.port = port
-        self.tx, self.rx = tx, rx
+    def execute(self):
         pass
 
-    def start(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(('', self.port))
+    def handle(self, conn, tx, rx):
+        pass
+
+    def serve(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(('0.0.0.0', self.port))
+        sock.listen()
+
         while True:
-            cmd, args = sock.recv(1024).decode().split(maxsplit=1)
-            params = dict([ params.split('=') for param in args.split('') ])
+            conn, addr = sock.accept()
+            tx, rx = Queue(), Queue()
+            handler = threading.Thread(target=self.handle, args=(conn, rx, tx))
+            self.client.update({
+                addr[0]:{'handler':handler,'conn':conn,'tx':tx,'rx':rx} })
+            handler.start()
+        pass
+
+    def daemon(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('', self.ipc_port))
+        sock.setblocking(False)
+        ##
+        while True:
+            msg, addr = sock.recvfrom(1024)
+            cmd, args = msg.decode().split(maxsplit=1)
+            cmd, client = cmd.split('@')
+            ##
+            pass
+        pass
+
+    def start(self):
+        self.server_thread = threading.Thread(target=self.serve)
+        self.server_thread.start()
+        self.daemon()
+        pass
+
     pass
 
 class Connector:
     def __init__(self, client:str='', port=None):
         self.client = client
         self.port = port if port else IPC_PORT
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.connect(('', self.port))
         pass
 
+    def list_all(self):
+        pass
+
     def describe(self):
-        return self.__send('describe')
+        return self.__send('describe', '')
     
     def info(self, function:str):
         return self.__send('info', {'function':function})
     
     def execute(self, function, parameters:dict=None, timeout:float=None):
-        msg = {'function':function}
-        if parameters: msg['parameters'] = parameters
-        if timeout: msg['timeout'] = timeout
-        return self.__send('execute', msg)
+        args = {'function':function}
+        if parameters: args['parameters'] = parameters
+        if timeout: args['timeout'] = timeout
+        return self.__send('execute', args)
     
     def fetch(self, tid):
         return self.__send('fetch', {'tid':tid})
 
-    def __send(self, cmd, args): #FIXME: need also send client name
-        msg = {'request':cmd, 'args':args}
-        msg = json.dumps(msg).encode()
-        ##
-        _len = struct.pack('I', len(msg))
-        msg = _len+msg
+    def __send(self, cmd, args:str):
+        ## format: '<cmd>@<client> <args>'
+        ' '.join( f'{cmd}@{self.client}', json.dumps(args) )
         self.sock.send(msg)
         ##
-        _len = struct.unpack('I', self.sock.recv(4))
-        msg = self.sock.recv(_len).decode()
+        msg = self.sock.recv().decode()
         msg = json.loads(msg)
+        if msg['err']:
+            raise Exception(msg['err'])
+        else:
+            del msg['err']
+            return msg
         pass
-    
-    def __connect(self, client):
-        pass
 
-    pass
-
-
-    
     pass
 
 def master_main(args):
-    req_q, res_q = Queue(), Queue()
-    master = MasterDaemon(args.port, res_q, req_q)
-    daemon = IPCDaemon(args.ipc_port, req_q, res_q)
-    master.start(); daemon.start()
+    master = MasterDaemon(args.port, args.ipc_port)
+    master.start()
     pass
 
 def slave_main(args):
