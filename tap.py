@@ -147,8 +147,7 @@ class MasterDaemon:
         self.clients = dict()
         pass
 
-    def server_execute(self, tid, fn, params, timeout):
-        manifest = {} #FIXME: need to fetch client manifest ...
+    def server_execute(self, tid, manifest, fn, params, timeout):
         try:
             config = manifest[fn]
             params = config['parameters'].update(params)
@@ -191,8 +190,11 @@ class MasterDaemon:
                 if cmd=='execute':
                     _args = json.load(args)['args']
                     params = args['parameters'] if 'parameters' in args else {}
+                    _request = { 'request':'info', 'args':{'function':args['function']} }
+                    manifest = _sync(conn, _request)
+                    ##
                     s_tid = GEN_TID()
-                    _thread = threading.Thread(target=self.server_execute, args=(s_tid, args['function'], params)); _thread.start()
+                    _thread = threading.Thread(target=self.server_execute, args=(s_tid, manifest, args['function'], params)); _thread.start()
                     self.tasks.update({ s_tid : {'handle':_thread, 'results':''} })
                     ##
                     res = _sync(conn, args); tid = res['tid']
