@@ -77,6 +77,8 @@ class SlaveDaemon:
                 time.sleep(0.1)
             ##
             for i,ret in enumerate(returns):
+                if ret is None:
+                    raise Exception( f'Client: no return from command with index {i}.' )
                 if ret < 0:
                     raise Exception( processes[i].stderr.decode() )
             outputs = { f'$client_output_{i}':o.decode() for i,o in enumerate(processes.stdout) }
@@ -164,6 +166,8 @@ class MasterDaemon:
                 time.sleep(0.1)
             ##
             for i,ret in enumerate(returns):
+                if ret is None:
+                    raise Exception( f'Server: no return from command with index {i}.' )
                 if ret < 0:
                     raise Exception( processes[i].stderr.decode() )
             outputs = { f'$server_output_{i}':o.decode() for i,o in enumerate(processes.stdout) }
@@ -265,7 +269,13 @@ class MasterDaemon:
     pass
 
 class Connector:
-    """The IPC proxy communicates with the server."""
+    """The IPC broker used to communicate with the tap server, via UDP.
+    
+    Args:
+        client (str): The client name. Leave empty to only query from server.
+        addr (str): (Optional) Specify the IP address of the server, default as ''.
+        port (int): (Optional) Specify the port of the server, default as 52525.
+    """
     def __init__(self, client:str='', addr=None, port=None):
         self.client = client
         addr = addr if addr else ''
@@ -275,7 +285,7 @@ class Connector:
         pass
 
     def list_all(self) -> dict:
-        """List all the online clients."""
+        """List all online clients."""
         return self.__send('list_all')
 
     def describe(self) -> dict:
@@ -283,11 +293,27 @@ class Connector:
         return self.__send('describe')
     
     def info(self, function:str) -> dict:
-        """Return the details of the function on the connected client."""
+        """Return the details of the function on the connected client.
+        
+        Args:
+            function (str): The function name.
+        
+        Returns:
+            dict: The dictionary object contains full manifest of the function.
+        """
         return self.__send('info', {'function':function})
     
     def execute(self, function:str, parameters:dict=None, timeout:float=None) -> str:
-        """Execute the function asynchronously, return instantly with task id."""
+        """Execute the function asynchronously, return instantly with task id.
+        
+        Args:
+            function (str): The function name.
+            parameters (dict): The parameters provided for the function. The absent values will use the default values in the manifest.
+            timeout (float): The longest time in seconds waiting for the outputs from function execution.
+        
+        Returns:
+            str: The task ID.
+        """
         args = {'function':function}
         if parameters: args['parameters'] = parameters
         if timeout: args['timeout'] = timeout
@@ -295,7 +321,14 @@ class Connector:
         return res['tid']
     
     def fetch(self, tid:str) -> dict:
-        """Fetch the previous function execution results with task id."""
+        """Fetch the previous function execution results with task id.
+        
+        Args:
+            tid (std): Task ID obtained from `Connector.execute`.
+        
+        Returns:
+            dict: the output collected in dictionary struct.
+        """
         return self.__send('fetch', {'tid':tid})
 
     def __send(self, cmd, args:str):
