@@ -265,32 +265,41 @@ class MasterDaemon:
     pass
 
 class Connector:
-    def __init__(self, client:str='', port=None):
+    """The IPC proxy communicates with the server."""
+    def __init__(self, client:str='', addr=None, port=None):
         self.client = client
-        self.port = port if port else IPC_PORT
+        addr = addr if addr else ''
+        port = port if port else IPC_PORT
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.connect(('', self.port))
+        self.sock.connect((addr, self.port))
         pass
 
-    def list_all(self):
-        return self.__send('list_all', '')
+    def list_all(self) -> dict:
+        """List all the online clients."""
+        return self.__send('list_all')
 
-    def describe(self):
-        return self.__send('describe', '')
+    def describe(self) -> dict:
+        """Return the available functions on the connected client."""
+        return self.__send('describe')
     
-    def info(self, function:str):
+    def info(self, function:str) -> dict:
+        """Return the details of the function on the connected client."""
         return self.__send('info', {'function':function})
     
-    def execute(self, function, parameters:dict=None, timeout:float=None):
+    def execute(self, function:str, parameters:dict=None, timeout:float=None) -> str:
+        """Execute the function asynchronously, return instantly with task id."""
         args = {'function':function}
         if parameters: args['parameters'] = parameters
         if timeout: args['timeout'] = timeout
-        return self.__send('execute', args)
+        res = self.__send('execute', args)
+        return res['tid']
     
-    def fetch(self, tid):
+    def fetch(self, tid:str) -> dict:
+        """Fetch the previous function execution results with task id."""
         return self.__send('fetch', {'tid':tid})
 
     def __send(self, cmd, args:str):
+        """For internal usage, error handling."""
         ## format: '<cmd>@<client> <args>'
         args = {'request':cmd, 'args':args}
         msg = ' '.join( f'{cmd}@{self.client}', json.dumps(args) )
