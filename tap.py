@@ -71,7 +71,7 @@ class SlaveDaemon:
             commands = config['client-commands']
             for i in range(len(commands)):
                 for k,v in exec_params.items():
-                    commands[i] = commands[i].replace(f'${k}', v)
+                    commands[i] = commands[i].replace(f'${k}', str(v))
             ##
             _now = time.time()
             processes = [ SHELL_POPEN(cmd) for cmd in commands ]
@@ -85,7 +85,8 @@ class SlaveDaemon:
                     raise Exception( f'Client: no return from command with index {i}.' )
                 if ret < 0:
                     raise Exception( processes[i].stderr.decode() )
-            outputs = { f'$client_output_{i}':p.stdout.read().decode() for i,p in enumerate(processes) }
+            outputs = { f'$client_output_{i}' : json.dumps(p.stdout.read().decode())
+                            for i,p in enumerate(processes) }
             ##
             results = dict()
             for key,value in config['output'].items():
@@ -165,7 +166,7 @@ class MasterDaemon:
             commands = config['server-commands']
             for i in range(len(commands)):
                 for k,v in exec_params.items():
-                    commands[i] = commands[i].replace(f'${k}', v)
+                    commands[i] = commands[i].replace(f'${k}', str(v))
             ##
             _now = time.time()
             processes = [ SHELL_POPEN(cmd) for cmd in commands ]
@@ -179,7 +180,8 @@ class MasterDaemon:
                     raise Exception( f'Server: no return from command with index {i}.' )
                 if ret < 0:
                     raise Exception( processes[i].stderr.decode() )
-            outputs = { f'$server_output_{i}':p.stdout.read().decode() for i,p in enumerate(processes) }
+            outputs = { f'$server_output_{i}' : json.dumps(p.stdout.read().decode())
+                            for i,p in enumerate(processes) }
             ##
             results = dict()
             for key,value in config['output'].items():
