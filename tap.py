@@ -65,11 +65,13 @@ class SlaveDaemon:
     def client_execute(self, tid, fn, params, timeout):
         try:
             config = self.manifest['functions'][fn]
-            params = config['parameters'].update(params)
+            exec_params = config['parameters'] if 'parameters' in config else {}
+            exec_params.update(params)
+            ##
             commands = config['client-commands']
             for i in range(len(commands)):
-                for k,v in params.items():
-                    commands[i].replace(f'${k}', v)
+                for k,v in exec_params.items():
+                    commands[i] = commands[i].replace(f'${k}', v)
             ##
             _now = time.time()
             processes = [ SHELL_POPEN(cmd) for cmd in commands ]
@@ -83,17 +85,19 @@ class SlaveDaemon:
                     raise Exception( f'Client: no return from command with index {i}.' )
                 if ret < 0:
                     raise Exception( processes[i].stderr.decode() )
-            outputs = { f'$client_output_{i}':o.decode() for i,o in enumerate(processes.stdout) }
+            outputs = { f'$client_output_{i}':p.stdout.read().decode() for i,p in enumerate(processes) }
             ##
             results = dict()
-            for key,value in self.manifest['output'].items():
+            for key,value in config['output'].items():
                 if value['exec']=='client':
                     cmd = value['cmd']
-                    [ cmd.replace(k,o) for k,o in outputs.items() ]
-                ret = SHELL_RUN(cmd).stdout.decode()
-                ret = re.findall(value['format'], ret)[0]
-                results[key] = ret
+                    for k,o in outputs.items():
+                        cmd = cmd.replace(k,o)
+                    ret = SHELL_RUN(cmd).stdout.decode()
+                    ret = re.findall(value['format'], ret)[0]
+                    results[key] = ret
         except Exception as e:
+            # traceback.print_exc()
             self.tasks[tid]['results'] = str(e)
         else:
             self.tasks[tid]['results'] = results
@@ -117,13 +121,14 @@ class SlaveDaemon:
                 _thread.start()
                 result = { 'tid': tid }
             elif request=='fetch' and 'tid' in args:
-                results = self.tasks[ args['tid'] ]['results']
-                if not results:
+                result = self.tasks[ args['tid'] ]['results']
+                if not result:
                     raise Exception('Client: empty response.')
                 self.tasks[ args['tid'] ]['handle'].join()
             else:
                 raise Exception('Invalid Request.')
         except Exception as e:
+            # traceback.print_exc()
             return { 'err': str(e) }
         else:
             return result
@@ -152,14 +157,15 @@ class MasterDaemon:
         self.clients = dict()
         pass
 
-    def server_execute(self, pair_tasks, tid, manifest, fn, params, timeout):
+    def server_execute(self, pair_tasks, tid, config, params, timeout):
         try:
-            config = manifest['functions'][fn]
-            params = config['parameters'].update(params)
+            exec_params = config['parameters'] if 'parameters' in config else {}
+            exec_params.update(params)
+            ##
             commands = config['server-commands']
             for i in range(len(commands)):
-                for k,v in params.items():
-                    commands[i].replace(f'${k}', v)
+                for k,v in exec_params.items():
+                    commands[i] = commands[i].replace(f'${k}', v)
             ##
             _now = time.time()
             processes = [ SHELL_POPEN(cmd) for cmd in commands ]
@@ -173,17 +179,19 @@ class MasterDaemon:
                     raise Exception( f'Server: no return from command with index {i}.' )
                 if ret < 0:
                     raise Exception( processes[i].stderr.decode() )
-            outputs = { f'$server_output_{i}':o.decode() for i,o in enumerate(processes.stdout) }
+            outputs = { f'$server_output_{i}':p.stdout.read().decode() for i,p in enumerate(processes) }
             ##
             results = dict()
-            for key,value in manifest['output'].items():
+            for key,value in config['output'].items():
                 if value['exec']=='server':
                     cmd = value['cmd']
-                    [ cmd.replace(k,o) for k,o in outputs.items() ]
-                ret = SHELL_RUN(cmd).stdout.decode()
-                ret = re.findall(value['format'], ret)[0]
-                results[key] = ret
+                    for k,o in outputs.items():
+                        cmd = cmd.replace(k,o)
+                    ret = SHELL_RUN(cmd).stdout.decode()
+                    ret = re.findall(value['format'], ret)[0]
+                    results[key] = ret
         except Exception as e:
+            # traceback.print_exc()
             pair_tasks[tid]['results'] = str(e)
         else:
             pair_tasks[tid]['results'] = results
@@ -199,10 +207,10 @@ class MasterDaemon:
                     params = p_args['parameters'] if 'parameters' in p_args else {}
                     timeout = p_args['timeout'] if 'timeout' in p_args else 999
                     _request = { 'request':'info', 'args':{'function':p_args['function']} }
-                    manifest = _sync(conn, _request)
+                    config = _sync(conn, _request)
                     ##
                     s_tid = GEN_TID()
-                    _thread = threading.Thread(target=self.server_execute, args=(pair_tasks, s_tid, manifest, p_args['function'], params,timeout))
+                    _thread = threading.Thread(target=self.server_execute, args=(pair_tasks, s_tid, config, params,timeout))
                     pair_tasks.update({ s_tid : {'handle':_thread, 'results':''} })
                     _thread.start()
                     ##
@@ -222,12 +230,11 @@ class MasterDaemon:
                         raise Exception('Server: empty response.')
                     pair_tasks[s_tid]['handle'].join()
                     ##
-                    print(client_results, server_results) #FIXME: empty client results && wrong server results
                     tx.put({ **client_results, **server_results })
                 else:
                     tx.put( _sync(conn, args, encoding=False) )
         except Exception: #FIXME: maybe broken connection, or not
-            traceback.print_exc()
+            # traceback.print_exc()
             print(f'Connection loss: {name}.')
             self.clients.pop(name)
         pass
