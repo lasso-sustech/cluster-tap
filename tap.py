@@ -23,7 +23,9 @@ SHELL_RUN = lambda x: sp.run(x, stdout=sp.PIPE, stderr=sp.PIPE, check=True, shel
 def _recv(sock:socket.socket, decoding:bool=True):
     _len = struct.unpack('I', sock.recv(4))[0]
     _msg = sock.recv(_len).decode()
-    _msg = json.loads(_msg) if decoding else _msg
+    if decoding:
+        _msg = json.loads(_msg)
+        if 'err' in _msg: raise Exception(_msg['err'])
     return _msg
 
 def _send(sock:socket.socket, msg, encoding:bool=True):
@@ -34,6 +36,46 @@ def _send(sock:socket.socket, msg, encoding:bool=True):
 def _sync(sock:socket.socket, msg, encoding=True, decoding=True):
     _send(sock, msg, encoding)
     return _recv(sock, decoding)
+
+def _execute(role, tasks, tid, config, params, timeout) -> None:
+    try:
+        exec_params = config['parameters'] if 'parameters' in config else {}
+        exec_params.update(params)
+        ##
+        commands = config[f'{role}-commands']
+        for i in range(len(commands)):
+            for k,v in exec_params.items():
+                commands[i] = commands[i].replace(f'${k}', str(v))
+        ##
+        _now = time.time()
+        processes = [ SHELL_POPEN(cmd) for cmd in commands ]
+        returns = [None]
+        while None in returns and time.time() - _now < timeout:
+            returns = [ proc.poll() for proc in processes ]
+            time.sleep(0.1)
+        ##
+        for i,ret in enumerate(returns):
+            if ret is None:
+                raise Exception( f'{role}: no return from command with index {i}.' )
+            if ret < 0:
+                raise Exception( processes[i].stderr.read().decode() )
+        outputs = { f'${role}_output_{i}' : json.dumps(p.stdout.read().decode())
+                        for i,p in enumerate(processes) }
+        ##
+        results = dict()
+        for key,value in config['output'].items():
+            if value['exec']==role:
+                cmd = value['cmd']
+                for k,o in outputs.items():
+                    cmd = cmd.replace(k,o)
+                ret = SHELL_RUN(cmd).stdout.decode()
+                ret = re.findall(value['format'], ret)[0]
+                results[key] = ret
+    except:
+        tasks[tid]['results'] = { 'err':traceback.format_exc() }
+    else:
+        tasks[tid]['results'] = results
+    pass
 
 class SlaveDaemon:
     def __init__(self, manifest, s_port, s_ip=None):
@@ -62,48 +104,6 @@ class SlaveDaemon:
         raise Exception('No master found.')
         pass
 
-    def client_execute(self, tid, fn, params, timeout):
-        try:
-            config = self.manifest['functions'][fn]
-            exec_params = config['parameters'] if 'parameters' in config else {}
-            exec_params.update(params)
-            ##
-            commands = config['client-commands']
-            for i in range(len(commands)):
-                for k,v in exec_params.items():
-                    commands[i] = commands[i].replace(f'${k}', str(v))
-            ##
-            _now = time.time()
-            processes = [ SHELL_POPEN(cmd) for cmd in commands ]
-            returns = [None]
-            while None in returns and time.time() - _now < timeout:
-                returns = [ proc.poll() for proc in processes ]
-                time.sleep(0.1)
-            ##
-            for i,ret in enumerate(returns):
-                if ret is None:
-                    raise Exception( f'Client: no return from command with index {i}.' )
-                if ret < 0:
-                    raise Exception( processes[i].stderr.decode() )
-            outputs = { f'$client_output_{i}' : json.dumps(p.stdout.read().decode())
-                            for i,p in enumerate(processes) }
-            ##
-            results = dict()
-            for key,value in config['output'].items():
-                if value['exec']=='client':
-                    cmd = value['cmd']
-                    for k,o in outputs.items():
-                        cmd = cmd.replace(k,o)
-                    ret = SHELL_RUN(cmd).stdout.decode()
-                    ret = re.findall(value['format'], ret)[0]
-                    results[key] = ret
-        except Exception as e:
-            # traceback.print_exc()
-            self.tasks[tid]['results'] = str(e)
-        else:
-            self.tasks[tid]['results'] = results
-        pass
-
     def handle(self, request, args):
         result = dict()
         try:
@@ -114,10 +114,12 @@ class SlaveDaemon:
                 fn = args['function']
                 result = self.manifest['functions'][fn]
             elif request=='execute' and 'function' in args:
+                fn = args['function']
+                config = self.manifest['functions'][fn]
                 params  = args['parameters'] if 'parameters' in args else {}
                 timeout = args['timeout'] if 'timeout' in args else 999
                 tid = GEN_TID()
-                _thread = threading.Thread(target=self.client_execute, args=(tid, args['function'], params, timeout))
+                _thread = threading.Thread(target=_execute, args=('client', self.tasks, tid, config, params, timeout))
                 self.tasks[tid] = {'handle':_thread, 'results':''}
                 _thread.start()
                 result = { 'tid': tid }
@@ -129,8 +131,7 @@ class SlaveDaemon:
             else:
                 raise Exception('Invalid Request.')
         except Exception as e:
-            # traceback.print_exc()
-            return { 'err': str(e) }
+            return { 'err': traceback.format_exc() }
         else:
             return result
         pass
@@ -158,51 +159,10 @@ class MasterDaemon:
         self.clients = dict()
         pass
 
-    def server_execute(self, pair_tasks, tid, config, params, timeout):
-        try:
-            exec_params = config['parameters'] if 'parameters' in config else {}
-            exec_params.update(params)
-            ##
-            commands = config['server-commands']
-            for i in range(len(commands)):
-                for k,v in exec_params.items():
-                    commands[i] = commands[i].replace(f'${k}', str(v))
-            ##
-            _now = time.time()
-            processes = [ SHELL_POPEN(cmd) for cmd in commands ]
-            returns = [None]
-            while None in returns and time.time() - _now < timeout:
-                returns = [ proc.poll() for proc in processes ]
-                time.sleep(0.1)
-            ##
-            for i,ret in enumerate(returns):
-                if ret is None:
-                    raise Exception( f'Server: no return from command with index {i}.' )
-                if ret < 0:
-                    raise Exception( processes[i].stderr.decode() )
-            outputs = { f'$server_output_{i}' : json.dumps(p.stdout.read().decode())
-                            for i,p in enumerate(processes) }
-            ##
-            results = dict()
-            for key,value in config['output'].items():
-                if value['exec']=='server':
-                    cmd = value['cmd']
-                    for k,o in outputs.items():
-                        cmd = cmd.replace(k,o)
-                    ret = SHELL_RUN(cmd).stdout.decode()
-                    ret = re.findall(value['format'], ret)[0]
-                    results[key] = ret
-        except Exception as e:
-            # traceback.print_exc()
-            pair_tasks[tid]['results'] = str(e)
-        else:
-            pair_tasks[tid]['results'] = results
-        pass
-
     def handle(self, name, conn, tx:Queue, rx:Queue):
         pair_tasks = dict()
-        try:
-            while True:
+        while True:
+            try:
                 cmd, args = rx.get()
                 if cmd=='execute':
                     p_args = json.loads(args)['args']
@@ -212,7 +172,7 @@ class MasterDaemon:
                     config = _sync(conn, _request)
                     ##
                     s_tid = GEN_TID()
-                    _thread = threading.Thread(target=self.server_execute, args=(pair_tasks, s_tid, config, params,timeout))
+                    _thread = threading.Thread(target=_execute, args=('server', pair_tasks, s_tid, config, params, timeout))
                     pair_tasks.update({ s_tid : {'handle':_thread, 'results':''} })
                     _thread.start()
                     ##
@@ -235,10 +195,13 @@ class MasterDaemon:
                     tx.put({ **client_results, **server_results })
                 else:
                     tx.put( _sync(conn, args, encoding=False) )
-        except Exception: #FIXME: maybe broken connection, or not
-            # traceback.print_exc()
-            print(f'Connection loss: {name}.')
-            self.clients.pop(name)
+            except struct.error:
+                _msg = f'Connection loss: {name}.'; print(_msg)
+                tx.put({ 'err':_msg })
+                self.clients.pop(name)
+                break
+            except Exception as e:
+                tx.put({ 'err':str(e) })
         pass
 
     def daemon(self):
