@@ -47,18 +47,22 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
             for k,v in exec_params.items():
                 commands[i] = commands[i].replace(f'${k}', str(v))
         ##
-        _now = time.time()
         processes = [ SHELL_POPEN(cmd) for cmd in commands ]
         returns = [None]
-        while None in returns and time.time() - _now < timeout:
+        _now = time.time()
+        while None in returns and time.time() - _now < timeout+0.5:
             returns = [ proc.poll() for proc in processes ]
             time.sleep(0.1)
         ##
         for i,ret in enumerate(returns):
             if ret is None:
-                raise Exception( f'{role}: no return from command with index {i}.' )
+                processes[i].terminate()
+                if role=='client':
+                    raise ClientTimeoutException( f'[{i}]-th command failed to complete.' )
+                elif role=='server':
+                    raise ServerTimeoutException( f'[{i}]-th command failed to complete.' )
             if ret < 0:
-                raise Exception( processes[i].stderr.read().decode() )
+                raise StdErrException( processes[i].stderr.read().decode() )
         outputs = { f'${role}_output_{i}' : json.dumps(p.stdout.read().decode())
                         for i,p in enumerate(processes) }
         ##
@@ -76,6 +80,24 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
     else:
         tasks[tid]['results'] = results
     pass
+
+class StdErrException(Exception):
+    def __init__(self, err): super().__init__(err)
+
+class ClientTimeoutException(Exception):
+    def __init__(self, err): super().__init__(err)
+
+class ClientNoResponseException(Exception):
+    def __init__(self, err): super().__init__(err)
+
+class InvalidRequestException(Exception):
+    def __init__(self, err): super().__init__(err)
+
+class ServerTimeoutException(Exception):
+    def __init__(self, err): super().__init__(err)
+
+class ServerNoResponseException(Exception):
+    def __init__(self, err): super().__init__(err)
 
 class SlaveDaemon:
     def __init__(self, manifest, s_port, s_ip=None):
@@ -126,11 +148,11 @@ class SlaveDaemon:
             elif request=='fetch' and 'tid' in args:
                 result = self.tasks[ args['tid'] ]['results']
                 if not result:
-                    raise Exception('Client: empty response.')
+                    raise ClientNoResponseException('Empty response.')
                 self.tasks[ args['tid'] ]['handle'].join()
             else:
-                raise Exception('Invalid Request.')
-        except Exception as e:
+                raise InvalidRequestException(f'Request "{request}" is invalid.')
+        except:
             return { 'err': traceback.format_exc() }
         else:
             return result
@@ -189,7 +211,7 @@ class MasterDaemon:
                     s_tid = pair_tasks[tid]
                     server_results = pair_tasks[s_tid]['results']
                     if not server_results:
-                        raise Exception('Server: empty response.')
+                        raise ServerNoResponseException('Empty response.')
                     pair_tasks[s_tid]['handle'].join()
                     ##
                     tx.put({ **client_results, **server_results })
@@ -341,7 +363,7 @@ def slave_main(args):
         manifest = open('./manifest.json')
         manifest = json.load( manifest )
     except:
-        raise Exception('Client manifest file load failure.')
+        raise Exception('Client manifest file loading failed.')
     ##
     slave = SlaveDaemon(manifest, args.port, args.client)
     slave.start()
