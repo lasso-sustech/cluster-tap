@@ -25,7 +25,8 @@ def _recv(sock:socket.socket, decoding:bool=True):
     _msg = sock.recv(_len).decode()
     if decoding:
         _msg = json.loads(_msg)
-        if 'err' in _msg: raise Exception(_msg['err'])
+        if 'err' in _msg:
+            raise UntangledException(_msg['err'])
     return _msg
 
 def _send(sock:socket.socket, msg, encoding:bool=True):
@@ -75,29 +76,41 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
                 ret = SHELL_RUN(cmd).stdout.decode()
                 ret = re.findall(value['format'], ret)[0]
                 results[key] = ret
-    except:
-        tasks[tid]['results'] = { 'err':traceback.format_exc() }
+    except Exception as e:
+        tasks[tid]['results'] = { 'err': UntangledException.format(e) }
     else:
         tasks[tid]['results'] = results
     pass
 
-class StdErrException(Exception):
-    def __init__(self, err): super().__init__(err)
+class StdErrException(Exception): pass
 
-class ClientTimeoutException(Exception):
-    def __init__(self, err): super().__init__(err)
+class ClientTimeoutException(Exception): pass
 
-class ClientNoResponseException(Exception):
-    def __init__(self, err): super().__init__(err)
+class ClientNoResponseException(Exception): pass
 
-class InvalidRequestException(Exception):
-    def __init__(self, err): super().__init__(err)
+class InvalidRequestException(Exception): pass
 
-class ServerTimeoutException(Exception):
-    def __init__(self, err): super().__init__(err)
+class AutoDetectFailureException(Exception): pass
 
-class ServerNoResponseException(Exception):
-    def __init__(self, err): super().__init__(err)
+class ClientConnectionLossException(Exception): pass
+
+class ClientNotFoundException(Exception): pass
+
+class ServerTimeoutException(Exception): pass
+
+class ServerNoResponseException(Exception): pass
+
+class UntangledException(Exception):
+    def __init__(self, args):
+        error_cls, error_msg = args
+        raise eval(error_cls)(error_msg)
+    
+    @staticmethod
+    def format(e:Exception):
+        error_cls = type(e).__name__
+        error_msg = traceback.format_exc()
+        return (error_cls, error_msg)
+    pass
 
 class SlaveDaemon:
     def __init__(self, manifest, s_port, s_ip=None):
@@ -123,7 +136,7 @@ class SlaveDaemon:
                 self.s_ip = s_ip
                 print(f'Find master on {s_ip}')
                 break
-        raise Exception('No master found.')
+        raise AutoDetectFailureException('No master found.')
         pass
 
     def handle(self, request, args):
@@ -152,8 +165,8 @@ class SlaveDaemon:
                 self.tasks[ args['tid'] ]['handle'].join()
             else:
                 raise InvalidRequestException(f'Request "{request}" is invalid.')
-        except:
-            return { 'err': traceback.format_exc() }
+        except Exception as e:
+            return { 'err': UntangledException.format(e) }
         else:
             return result
         pass
@@ -218,12 +231,12 @@ class MasterDaemon:
                 else:
                     tx.put( _sync(conn, args, encoding=False) )
             except struct.error:
-                _msg = f'Connection loss: {name}.'; print(_msg)
-                tx.put({ 'err':_msg })
+                _msg = f'{name} disconnected.'
+                tx.put({ 'err': ('ClientConnectionLossException', _msg) })
                 self.clients.pop(name)
                 break
             except Exception as e:
-                tx.put({ 'err':str(e) })
+                tx.put({ 'err':UntangledException.format(e) })
         pass
 
     def daemon(self):
@@ -239,7 +252,7 @@ class MasterDaemon:
             if client=='' or cmd=='list_all':
                 res = { k:v['addr'] for k,v in self.clients.items() }
             elif client not in self.clients:
-                res = { 'err':f'No client "{client}" exists.' }
+                res = { 'err': ('ClientNotFoundException', f'No client "{client}" exists.') }
             else:
                 self.clients[client]['tx'].put((cmd, args))
                 res = self.clients[client]['rx'].get()
@@ -348,7 +361,7 @@ class Connector:
         res = self.sock.recv(1024).decode()
         res = json.loads(res)
         if 'err' in res:
-            raise Exception(res['err'])
+            raise UntangledException(res['err'])
         return res
 
     pass
