@@ -8,6 +8,7 @@ import socket
 import string
 import struct
 import subprocess as sp
+from subprocess import CalledProcessError
 import threading
 import time
 import traceback
@@ -42,7 +43,7 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
         exec_params = config['parameters'] if 'parameters' in config else {}
         exec_params.update(params)
         ##
-        commands = config[f'{role}-commands']
+        commands = config[f'{role}-commands'].copy()
         for i in range(len(commands)):
             for k,v in exec_params.items():
                 commands[i] = commands[i].replace(f'${k}', str(v))
