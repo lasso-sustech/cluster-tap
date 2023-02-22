@@ -8,7 +8,6 @@ import socket
 import string
 import struct
 import subprocess as sp
-from subprocess import CalledProcessError
 import threading
 import time
 import traceback
@@ -21,12 +20,33 @@ GEN_TID = lambda: ''.join([random.choice(string.ascii_letters) for _ in range(8)
 SHELL_POPEN = lambda x: sp.Popen(x, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
 SHELL_RUN = lambda x: sp.run(x, stdout=sp.PIPE, stderr=sp.PIPE, check=True, shell=True)
 
-def _recv(sock:socket.socket, decoding:bool=True):
+class StdErrException(Exception): pass
+class ClientTimeoutException(Exception): pass
+class ClientNoResponseException(Exception): pass
+class InvalidRequestException(Exception): pass
+class AutoDetectFailureException(Exception): pass
+class ClientConnectionLossException(Exception): pass
+class ClientNotFoundException(Exception): pass
+class ServerTimeoutException(Exception): pass
+class ServerNoResponseException(Exception): pass
+
+class UntangledException(Exception):
+    def __init__(self, args):
+        err_cls, err_msg = args
+        raise eval(err_cls)(err_msg)
+    
+    @staticmethod
+    def format(e:Exception):
+        err_cls = type(e).__name__
+        err_msg = str(e) + '\n' + traceback.format_exc()
+        return (err_cls, err_msg)
+    pass
+
+def _recv(sock:socket.socket):
     _len = struct.unpack('I', sock.recv(4))[0]
     _msg = sock.recv(_len).decode()
-    if decoding:
-        _msg = json.loads(_msg)
-        if 'err' in _msg: UntangledException(_msg['err'])
+    _msg = json.loads(_msg)
+    if 'err' in _msg: UntangledException(_msg['err'])
     return _msg
 
 def _send(sock:socket.socket, msg, encoding:bool=True):
@@ -36,7 +56,18 @@ def _send(sock:socket.socket, msg, encoding:bool=True):
 
 def _sync(sock:socket.socket, msg, encoding=True, decoding=True):
     _send(sock, msg, encoding)
-    return _recv(sock, decoding)
+    return _recv(sock)
+
+def _extract(cmd:str, format:str) -> str | list[str] :
+    try:
+        ret = SHELL_RUN(cmd).stdout.decode()
+    except sp.CalledProcessError as e:
+        raise StdErrException( e.stderr.decode() )
+    else:
+        ret = re.findall(format, ret)
+        if len(ret)==0: ret=''
+        if len(ret)==1: ret=str(ret[0])
+    return ret
 
 def _execute(role, tasks, tid, config, params, timeout) -> None:
     try:
@@ -59,13 +90,17 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
             if ret is None:
                 processes[i].terminate()
                 if role=='client':
-                    raise ClientTimeoutException( f'[{i}]-th command failed to complete.' )
+                    raise ClientTimeoutException( f'[{i}]-th {role} command.' )
                 elif role=='server':
-                    raise ServerTimeoutException( f'[{i}]-th command failed to complete.' )
-            if ret < 0:
-                raise StdErrException( processes[i].stderr.read().decode() )
-        outputs = { f'${role}_output_{i}' : repr(p.stdout.read().decode())
-                        for i,p in enumerate(processes) }
+                    raise ServerTimeoutException( f'[{i}]-th {role} command.' )
+            elif ret < 0:
+                _stderr = processes[i].stderr; assert(not _stderr==None)
+                raise StdErrException( _stderr.read().decode() )
+        ##
+        outputs = dict()
+        for i,p in enumerate(processes):
+            _stdout = p.stdout; assert(not _stdout==None)
+            outputs.update({ f'${role}_output_{i}' : _stdout.read().decode()  })
         ##
         results = dict()
         for key,value in config['output'].items():
@@ -73,43 +108,11 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
                 cmd = value['cmd']
                 for k,o in outputs.items():
                     cmd = cmd.replace(k,o)
-                ret = SHELL_RUN(cmd).stdout.decode()
-                ret = re.findall(value['format'], ret)[0]
-                results[key] = ret
+                results[key] = _extract(cmd, value['format'])
     except Exception as e:
         tasks[tid]['results'] = { 'err': UntangledException.format(e) }
     else:
         tasks[tid]['results'] = results
-    pass
-
-class StdErrException(Exception): pass
-
-class ClientTimeoutException(Exception): pass
-
-class ClientNoResponseException(Exception): pass
-
-class InvalidRequestException(Exception): pass
-
-class AutoDetectFailureException(Exception): pass
-
-class ClientConnectionLossException(Exception): pass
-
-class ClientNotFoundException(Exception): pass
-
-class ServerTimeoutException(Exception): pass
-
-class ServerNoResponseException(Exception): pass
-
-class UntangledException(Exception):
-    def __init__(self, args):
-        err_cls, err_msg = args
-        raise eval(err_cls)(err_msg)
-    
-    @staticmethod
-    def format(e:Exception):
-        err_cls = type(e).__name__
-        err_msg = str(e) + '\n' + traceback.format_exc()
-        return (err_cls, err_msg)
     pass
 
 class SlaveDaemon:
@@ -122,9 +125,9 @@ class SlaveDaemon:
     
     def discover(self):
         o = SHELL_RUN('ip route | grep default').stdout.decode()
-        iface_name = re.findall('default via (\S+) dev (\S+) .*', o)[0][1]
+        iface_name = re.findall('default via (\\S+) dev (\\S+) .*', o)[0][1]
         o = SHELL_RUN('ip addr').stdout.decode()
-        iface_network = re.findall(f'.+inet (\S+).+{iface_name}', o)[0]
+        iface_network = re.findall(f'.+inet (\\S+).+{iface_name}', o)[0]
         all_hosts = ipaddress.IPv4Network(iface_network, strict=False).hosts()
         ##
         print(f'Auto-detect master over {iface_name} ...')
@@ -194,7 +197,7 @@ class MasterDaemon:
         self.clients = dict()
         pass
 
-    def handle(self, name, conn, tx:Queue, rx:Queue):
+    def handle(self, name, conn, tx:Queue[dict], rx:Queue[tuple]):
         pair_tasks = dict()
         while True:
             try:
@@ -307,11 +310,11 @@ class Connector:
 
     def list_all(self) -> dict:
         """List all online clients."""
-        return self.__send('list_all', '')
+        return self.__send('list_all')
 
     def describe(self) -> dict:
         """Return the available functions on the connected client."""
-        return self.__send('describe', '')
+        return self.__send('describe')
     
     def info(self, function:str) -> dict:
         """Return the details of the function on the connected client.
@@ -324,7 +327,7 @@ class Connector:
         """
         return self.__send('info', {'function':function})
     
-    def execute(self, function:str, parameters:dict=None, timeout:float=None) -> str:
+    def execute(self, function:str, parameters:dict={}, timeout:float=-1) -> str:
         """Execute the function asynchronously, return instantly with task id.
         
         Args:
@@ -335,9 +338,7 @@ class Connector:
         Returns:
             str: The task ID.
         """
-        args = {'function':function}
-        if parameters: args['parameters'] = parameters
-        if timeout: args['timeout'] = timeout
+        args = { 'function':function, 'parameters':parameters, 'timeout':timeout }
         res = self.__send('execute', args)
         return res['tid']
     
@@ -352,7 +353,7 @@ class Connector:
         """
         return self.__send('fetch', {'tid':tid})
 
-    def __send(self, cmd, args:str):
+    def __send(self, cmd, args:dict={}):
         """For internal usage, error handling."""
         ## format: '<cmd>@<client> <args>'
         args = {'request':cmd, 'args':args}
