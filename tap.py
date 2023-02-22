@@ -25,8 +25,7 @@ def _recv(sock:socket.socket, decoding:bool=True):
     _msg = sock.recv(_len).decode()
     if decoding:
         _msg = json.loads(_msg)
-        if 'err' in _msg:
-            raise UntangledException(_msg['err'])
+        if 'err' in _msg: UntangledException(_msg['err'])
     return _msg
 
 def _send(sock:socket.socket, msg, encoding:bool=True):
@@ -64,7 +63,7 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
                     raise ServerTimeoutException( f'[{i}]-th command failed to complete.' )
             if ret < 0:
                 raise StdErrException( processes[i].stderr.read().decode() )
-        outputs = { f'${role}_output_{i}' : json.dumps(p.stdout.read().decode())
+        outputs = { f'${role}_output_{i}' : repr(p.stdout.read().decode())
                         for i,p in enumerate(processes) }
         ##
         results = dict()
@@ -102,14 +101,14 @@ class ServerNoResponseException(Exception): pass
 
 class UntangledException(Exception):
     def __init__(self, args):
-        error_cls, error_msg = args
-        raise eval(error_cls)(error_msg)
+        err_cls, err_msg = args
+        raise eval(err_cls)(err_msg)
     
     @staticmethod
     def format(e:Exception):
-        error_cls = type(e).__name__
-        error_msg = traceback.format_exc()
-        return (error_cls, error_msg)
+        err_cls = type(e).__name__
+        err_msg = str(e) + '\n' + traceback.format_exc()
+        return (err_cls, err_msg)
     pass
 
 class SlaveDaemon:
@@ -231,12 +230,12 @@ class MasterDaemon:
                 else:
                     tx.put( _sync(conn, args, encoding=False) )
             except struct.error:
-                _msg = f'{name} disconnected.'
-                tx.put({ 'err': ('ClientConnectionLossException', _msg) })
+                e = ClientConnectionLossException(f'{name} disconnected.')
+                tx.put({ 'err': UntangledException.format(e) })
                 self.clients.pop(name)
                 break
             except Exception as e:
-                tx.put({ 'err':UntangledException.format(e) })
+                tx.put({ 'err': UntangledException.format(e) })
         pass
 
     def daemon(self):
@@ -252,7 +251,8 @@ class MasterDaemon:
             if client=='' or cmd=='list_all':
                 res = { k:v['addr'] for k,v in self.clients.items() }
             elif client not in self.clients:
-                res = { 'err': ('ClientNotFoundException', f'No client "{client}" exists.') }
+                e = ClientNotFoundException(f'Client "{client}" not exists.')
+                res = { 'err': UntangledException.format(e) }
             else:
                 self.clients[client]['tx'].put((cmd, args))
                 res = self.clients[client]['rx'].get()
@@ -358,10 +358,9 @@ class Connector:
         msg = ' '.join([ f'{cmd}@{self.client}', json.dumps(args) ]).encode()
         self.sock.send(msg)
         ##
-        res = self.sock.recv(1024).decode()
+        res = self.sock.recv(4096).decode()
         res = json.loads(res)
-        if 'err' in res:
-            raise UntangledException(res['err'])
+        if 'err' in res: UntangledException(res['err'])
         return res
 
     pass
