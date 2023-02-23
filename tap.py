@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 import argparse
 import ipaddress
 import json
@@ -47,7 +47,7 @@ def _recv(sock:socket.socket):
     _len = struct.unpack('I', sock.recv(4))[0]
     _msg = sock.recv(_len).decode()
     _msg = json.loads(_msg)
-    if 'err' in _msg: UntangledException(_msg['err'])
+    # if 'err' in _msg: UntangledException(_msg['err'])
     return _msg
 
 def _send(sock:socket.socket, msg, encoding:bool=True):
@@ -59,7 +59,7 @@ def _sync(sock:socket.socket, msg, encoding=True, decoding=True):
     _send(sock, msg, encoding)
     return _recv(sock)
 
-def _extract(cmd:str, format:str) -> str | list[str] :
+def _extract(cmd:str, format:str):
     try:
         ret = SHELL_RUN(cmd).stdout.decode()
     except sp.CalledProcessError as e:
@@ -76,13 +76,15 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
         exec_params = config['parameters'] if 'parameters' in config else {}
         exec_params.update(params)
         ##
+        if f'{role}-commands' not in config:
+            return
         commands = config[f'{role}-commands'].copy()
         for i in range(len(commands)):
             for k,v in exec_params.items():
                 commands[i] = commands[i].replace(f'${k}', str(v))
         ##
         processes = [ SHELL_POPEN(cmd) for cmd in commands ]
-        returns = [None]
+        returns = [ proc.poll() for proc in processes ]
         _now = time.time()
         while None in returns and time.time() - _now < timeout:
             returns = [ proc.poll() for proc in processes ]
@@ -90,27 +92,30 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
         ##
         for i,ret in enumerate(returns):
             if ret is None:
-                processes[i].terminate()
+                processes[i].kill()
                 if role=='client':
                     raise ClientTimeoutException( f'[{i}]-th {role} command.' )
                 elif role=='server':
                     raise ServerTimeoutException( f'[{i}]-th {role} command.' )
-            elif ret < 0:
+            ##
+            if ret != 0:
                 _stderr = processes[i].stderr; assert(not _stderr==None)
                 raise StdErrException( _stderr.read().decode() )
         ##
         outputs = dict()
         for i,p in enumerate(processes):
             _stdout = p.stdout; assert(not _stdout==None)
-            outputs.update({ f'${role}_output_{i}' : _stdout.read().decode()  })
+            outputs.update({ f'${role}_output_{i}' : repr(_stdout.read().decode())  })
         ##
         results = dict()
         for key,value in config['output'].items():
             if value['exec']==role:
-                cmd = value['cmd']
+                cmd, _format = value['cmd'], value['format']
                 for k,o in outputs.items():
                     cmd = cmd.replace(k,o)
-                results[key] = _extract(cmd, value['format'])
+                for k,v in exec_params.items():
+                    cmd = cmd.replace(f'${k}', str(v))
+                results[key] = _extract(cmd, _format)
     except Exception as e:
         tasks[tid]['results'] = { 'err': UntangledException.format(e) }
     else:
@@ -176,7 +181,7 @@ class Handler:
         return handler.proxy(conn, tasks, args)
 
     class list_all(Request):
-        def server(self, _client, _args):
+        def server(self, _args):
             return  { k:v['addr'] for k,v in self.handler.clients.items() }
         pass
 
@@ -202,7 +207,7 @@ class Handler:
             timeout = p_args['timeout'] if p_args['timeout']>=0 else 999
             s_tid = GEN_TID()
             _thread = threading.Thread(target=_execute, args=('server', tasks, s_tid, config, params, timeout))
-            tasks.update({ s_tid : {'handle':_thread, 'results':''} })
+            tasks.update({ s_tid : {'handle':_thread, 'results':{}} })
             _thread.start()
             ## use default bypass behavior
             res = super().proxy(conn, tasks, args)
@@ -218,7 +223,7 @@ class Handler:
             timeout = args['timeout'] if args['timeout']>=0 else 999
             tid = GEN_TID()
             _thread = threading.Thread(target=_execute, args=('client', self.handler.tasks, tid, config, params, timeout))
-            self.handler.tasks[tid] = {'handle':_thread, 'results':''}
+            self.handler.tasks[tid] = {'handle':_thread, 'results':{}}
             _thread.start()
             return { 'tid': tid }
         pass
@@ -304,7 +309,7 @@ class MasterDaemon(Handler):
         self.clients = dict()
         pass
 
-    def proxy_service(self, name, tx:Queue[dict], rx:Queue[tuple]):
+    def proxy_service(self, name, tx:Queue, rx:Queue):
         while True:
             try:
                 res = self.proxy( self.clients[name], *rx.get() )
