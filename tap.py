@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from abc import ABC, abstractmethod
 import argparse
 import ipaddress
 import json
@@ -65,6 +66,7 @@ def _extract(cmd:str, format:str) -> str | list[str] :
         raise StdErrException( e.stderr.decode() )
     else:
         ret = re.findall(format, ret)
+        ret = [ x for x in ret if x ]
         if len(ret)==0: ret=''
         if len(ret)==1: ret=str(ret[0])
     return ret
@@ -82,7 +84,7 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
         processes = [ SHELL_POPEN(cmd) for cmd in commands ]
         returns = [None]
         _now = time.time()
-        while None in returns and time.time() - _now < timeout+0.5:
+        while None in returns and time.time() - _now < timeout:
             returns = [ proc.poll() for proc in processes ]
             time.sleep(0.1)
         ##
@@ -115,7 +117,139 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
         tasks[tid]['results'] = results
     pass
 
-class SlaveDaemon:
+class Request:
+    def __init__(self, handler):
+        self.handler = handler
+    
+    def console(self, args:dict) -> dict:
+        '''Default console behavior: [console] <--(bypass)--> [server].'''
+        _request = type(self).__name__
+        args = {'request':_request, 'args':args}
+        msg = '{request} {client}@{args}'.format(
+                request=_request, client=self.handler.client, args=json.dumps(args) ).encode()
+        self.handler.sock.send(msg)
+        ##
+        res = self.handler.sock.recv(4096).decode()
+        res = json.loads(res)
+        if 'err' in res: UntangledException(res['err'])
+        return res
+
+    def server(self, client:str, args:dict) -> dict:
+        '''Default server behavior: [server] <--(bypass)--> [proxy].'''
+        _request = type(self).__name__
+        if client not in self.handler.clients:
+            e = ClientNotFoundException(f'Client "{client}" not exists.')
+            res = { 'err': UntangledException.format(e) }
+        else:
+            self.handler.clients[client]['tx'].put((_request, args))
+            res = self.handler.clients[client]['rx'].get()
+        return res
+    
+    def proxy(self, conn, _tasks:dict, args:dict) -> dict:
+        '''Default proxy behavior: [proxy] <--(bypass)--> [client].'''
+        return _sync(conn, args, encoding=False)
+    
+    @abstractmethod
+    def client(self, args:dict) -> dict: pass
+    pass
+
+class Handler:
+    ## console <--> server <--> proxy <--> client
+    def handle(self, request:str, args) -> dict:
+        try:
+            handler = getattr(Handler, request)(self)
+        except:
+            raise InvalidRequestException(f'Request "{request}" is invalid.')
+        ##
+        if isinstance(self,MasterDaemon):
+            client, args = args.split('@', maxsplit=1)
+            return handler.server(client, args)
+        if isinstance(self,SlaveDaemon):
+            return handler.client(args)
+        if isinstance(self,Connector):
+            return handler.console(args)
+        return dict()
+
+    def proxy(self, client:dict, request:str, args:dict) -> dict:
+        handler = getattr(self, request)(self)
+        conn, tasks = client['conn'], client['tasks']
+        return handler.proxy(conn, tasks, args)
+
+    class list_all(Request):
+        def server(self, _client, _args):
+            return  { k:v['addr'] for k,v in self.handler.clients.items() }
+        pass
+
+    class describe(Request):
+        def client(self, _args):
+            return { k:v['description'] for k,v in self.handler.manifest['functions'].items() }
+        pass
+
+    class info(Request):
+        def client(self, args):
+            fn = args['function']
+            return self.handler.manifest['functions'][fn]
+        pass
+
+    class execute(Request):
+        def proxy(self, conn, tasks, args):
+            ## load config from client
+            p_args = json.loads(args)['args']
+            _request = { 'request':'info', 'args':{'function':p_args['function']} }
+            config = _sync(conn, _request)
+            ## execute at server-side
+            params = p_args['parameters'] if 'parameters' in p_args else {}
+            timeout = p_args['timeout'] if p_args['timeout']>=0 else 999
+            s_tid = GEN_TID()
+            _thread = threading.Thread(target=_execute, args=('server', tasks, s_tid, config, params, timeout))
+            tasks.update({ s_tid : {'handle':_thread, 'results':''} })
+            _thread.start()
+            ## use default bypass behavior
+            res = super().proxy(conn, tasks, args)
+            ## update {tid, s_tid} map
+            tid = res['tid']
+            tasks.update({ tid : s_tid })
+            return res
+
+        def client(self, args):
+            fn = args['function']
+            config = self.handler.manifest['functions'][fn]
+            params  = args['parameters'] if 'parameters' in args else {}
+            timeout = args['timeout'] if args['timeout']>=0 else 999
+            tid = GEN_TID()
+            _thread = threading.Thread(target=_execute, args=('client', self.handler.tasks, tid, config, params, timeout))
+            self.handler.tasks[tid] = {'handle':_thread, 'results':''}
+            _thread.start()
+            return { 'tid': tid }
+        pass
+
+    class fetch(Request):
+        def proxy(self, conn, tasks, args):
+            ## use default bypass behavior
+            client_results = super().proxy(conn, tasks, args)
+            ## get s_tid with tid
+            args = json.loads(args)
+            tid = args['args']['tid']
+            s_tid = tasks[tid]
+            ## fetch server-side results
+            server_results = tasks[s_tid]['results']
+            if not server_results:
+                raise ServerNoResponseException('Empty response.')
+            tasks[s_tid]['handle'].join()
+            ##
+            return { **client_results, **server_results }
+        
+        def client(self, args):
+            res = self.handler.tasks[ args['tid'] ]['results']
+            if not res:
+                raise ClientNoResponseException('Empty response.')
+            self.handler.tasks[ args['tid'] ]['handle'].join()
+            return res
+        pass
+
+    pass
+
+class SlaveDaemon(Handler):
     def __init__(self, manifest, s_port, s_ip=None):
         self.manifest = manifest
         self.s_port = s_port
@@ -142,38 +276,6 @@ class SlaveDaemon:
         raise AutoDetectFailureException('No master found.')
         pass
 
-    def handle(self, request, args):
-        result = dict()
-        try:
-            if request=='describe':
-                abstract = { k:v['description'] for k,v in self.manifest['functions'].items() }
-                result = { 'name': self.manifest['name'], 'functions': abstract }
-            elif request=='info' and 'function' in args:
-                fn = args['function']
-                result = self.manifest['functions'][fn]
-            elif request=='execute' and 'function' in args:
-                fn = args['function']
-                config = self.manifest['functions'][fn]
-                params  = args['parameters'] if 'parameters' in args else {}
-                timeout = args['timeout'] if 'timeout' in args else 999
-                tid = GEN_TID()
-                _thread = threading.Thread(target=_execute, args=('client', self.tasks, tid, config, params, timeout))
-                self.tasks[tid] = {'handle':_thread, 'results':''}
-                _thread.start()
-                result = { 'tid': tid }
-            elif request=='fetch' and 'tid' in args:
-                result = self.tasks[ args['tid'] ]['results']
-                if not result:
-                    raise ClientNoResponseException('Empty response.')
-                self.tasks[ args['tid'] ]['handle'].join()
-            else:
-                raise InvalidRequestException(f'Request "{request}" is invalid.')
-        except Exception as e:
-            return { 'err': UntangledException.format(e) }
-        else:
-            return result
-        pass
-
     def start(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((self.s_ip, self.s_port))
@@ -183,56 +285,29 @@ class SlaveDaemon:
         print( f'Client "{name}" is now on.' )
         ##
         while True:
-            msg = _recv(sock)
-            res = self.handle(msg['request'], msg['args'])
-            _send(sock, res)
+            try:
+                msg = _recv(sock)
+                res = self.handle(msg['request'], msg['args'])
+            except Exception as e:
+                err = { 'err': UntangledException.format(e) }
+                _send(sock, err)
+            else:
+                _send(sock, res)
         pass
 
     pass
 
-class MasterDaemon:
+class MasterDaemon(Handler):
     def __init__(self, port, ipc_port):
         self.port = port
         self.ipc_port = ipc_port
         self.clients = dict()
         pass
 
-    def handle(self, name, conn, tx:Queue[dict], rx:Queue[tuple]):
-        pair_tasks = dict()
+    def proxy_service(self, name, tx:Queue[dict], rx:Queue[tuple]):
         while True:
             try:
-                cmd, args = rx.get()
-                if cmd=='execute':
-                    p_args = json.loads(args)['args']
-                    params = p_args['parameters'] if 'parameters' in p_args else {}
-                    timeout = p_args['timeout'] if 'timeout' in p_args else 999
-                    _request = { 'request':'info', 'args':{'function':p_args['function']} }
-                    config = _sync(conn, _request)
-                    ##
-                    s_tid = GEN_TID()
-                    _thread = threading.Thread(target=_execute, args=('server', pair_tasks, s_tid, config, params, timeout))
-                    pair_tasks.update({ s_tid : {'handle':_thread, 'results':''} })
-                    _thread.start()
-                    ##
-                    res = _sync(conn, args, encoding=False)
-                    tid = res['tid']
-                    pair_tasks.update({ tid : s_tid })
-                    tx.put( res )
-                    pass
-                elif cmd=='fetch':
-                    _args = json.loads(args)
-                    tid = _args['args']['tid']
-                    client_results = _sync(conn, args, encoding=False)
-                    ##
-                    s_tid = pair_tasks[tid]
-                    server_results = pair_tasks[s_tid]['results']
-                    if not server_results:
-                        raise ServerNoResponseException('Empty response.')
-                    pair_tasks[s_tid]['handle'].join()
-                    ##
-                    tx.put({ **client_results, **server_results })
-                else:
-                    tx.put( _sync(conn, args, encoding=False) )
+                res = self.proxy( self.clients[name], *rx.get() )
             except struct.error:
                 e = ClientConnectionLossException(f'{name} disconnected.')
                 tx.put({ 'err': UntangledException.format(e) })
@@ -240,6 +315,8 @@ class MasterDaemon:
                 break
             except Exception as e:
                 tx.put({ 'err': UntangledException.format(e) })
+            else:
+                tx.put( res )
         pass
 
     def daemon(self):
@@ -250,16 +327,8 @@ class MasterDaemon:
         while True:
             msg, addr = sock.recvfrom(1024)
             cmd, args = msg.decode().split(maxsplit=1)
-            cmd, client = cmd.split('@')
-            ## blocking-mode
-            if client=='' or cmd=='list_all':
-                res = { k:v['addr'] for k,v in self.clients.items() }
-            elif client not in self.clients:
-                e = ClientNotFoundException(f'Client "{client}" not exists.')
-                res = { 'err': UntangledException.format(e) }
-            else:
-                self.clients[client]['tx'].put((cmd, args))
-                res = self.clients[client]['rx'].get()
+            ##
+            res = self.handle(cmd, args)
             res = json.dumps(res).encode()
             sock.sendto(res, addr)
             pass
@@ -278,9 +347,9 @@ class MasterDaemon:
             print(f'Client "{name}" connected.')
             ##
             tx, rx = Queue(), Queue()
-            handler = threading.Thread(target=self.handle, args=(name, conn, rx, tx))
+            handler = threading.Thread(target=self.proxy_service, args=(name, rx, tx))
             self.clients.update({
-                name:{'handler':handler,'conn':conn,'addr':addr,'tx':tx,'rx':rx} })
+                name:{'handler':handler,'conn':conn,'tasks':{},'addr':addr,'tx':tx,'rx':rx} })
             handler.start()
         pass
 
@@ -292,7 +361,7 @@ class MasterDaemon:
 
     pass
 
-class Connector:
+class Connector(Handler):
     """The IPC broker used to communicate with the tap server, via UDP.
     
     Args:
@@ -310,11 +379,11 @@ class Connector:
 
     def list_all(self) -> dict:
         """List all online clients."""
-        return self.__send('list_all')
+        return self.handle('list_all', {})
 
     def describe(self) -> dict:
         """Return the available functions on the connected client."""
-        return self.__send('describe')
+        return self.handle('describe', {})
     
     def info(self, function:str) -> dict:
         """Return the details of the function on the connected client.
@@ -325,7 +394,7 @@ class Connector:
         Returns:
             dict: The dictionary object contains full manifest of the function.
         """
-        return self.__send('info', {'function':function})
+        return self.handle('info', {'function':function})
     
     def execute(self, function:str, parameters:dict={}, timeout:float=-1) -> str:
         """Execute the function asynchronously, return instantly with task id.
@@ -339,7 +408,7 @@ class Connector:
             str: The task ID.
         """
         args = { 'function':function, 'parameters':parameters, 'timeout':timeout }
-        res = self.__send('execute', args)
+        res = self.handle('execute', args)
         return res['tid']
     
     def fetch(self, tid:str) -> dict:
@@ -351,19 +420,7 @@ class Connector:
         Returns:
             dict: the output collected in dictionary struct.
         """
-        return self.__send('fetch', {'tid':tid})
-
-    def __send(self, cmd, args:dict={}):
-        """For internal usage, error handling."""
-        ## format: '<cmd>@<client> <args>'
-        args = {'request':cmd, 'args':args}
-        msg = ' '.join([ f'{cmd}@{self.client}', json.dumps(args) ]).encode()
-        self.sock.send(msg)
-        ##
-        res = self.sock.recv(4096).decode()
-        res = json.loads(res)
-        if 'err' in res: UntangledException(res['err'])
-        return res
+        return self.handle('fetch', {'tid':tid})
 
     pass
 
@@ -373,11 +430,8 @@ def master_main(args):
     pass
 
 def slave_main(args):
-    try:
-        manifest = open('./manifest.json')
-        manifest = json.load( manifest )
-    except:
-        raise Exception('Client manifest file loading failed.')
+    manifest = open('./manifest.json')
+    manifest = json.load( manifest )
     ##
     slave = SlaveDaemon(manifest, args.port, args.client)
     slave.start()
