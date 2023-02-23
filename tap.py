@@ -134,9 +134,10 @@ class Request:
         if 'err' in res: UntangledException(res['err'])
         return res
 
-    def server(self, client:str, args:dict) -> dict:
+    def server(self, args:str) -> dict:
         '''Default server behavior: [server] <--(bypass)--> [proxy].'''
         _request = type(self).__name__
+        client, args = args.split('@', maxsplit=1)
         if client not in self.handler.clients:
             e = ClientNotFoundException(f'Client "{client}" not exists.')
             res = { 'err': UntangledException.format(e) }
@@ -162,8 +163,7 @@ class Handler:
             raise InvalidRequestException(f'Request "{request}" is invalid.')
         ##
         if isinstance(self,MasterDaemon):
-            client, args = args.split('@', maxsplit=1)
-            return handler.server(client, args)
+            return handler.server(args)
         if isinstance(self,SlaveDaemon):
             return handler.client(args)
         if isinstance(self,Connector):
