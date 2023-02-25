@@ -255,14 +255,15 @@ class Handler:
     pass
 
 class SlaveDaemon(Handler):
-    def __init__(self, manifest, s_port, s_ip=None):
+    def __init__(self, manifest:dict, port:int, addr:str=''):
         self.manifest = manifest
-        self.s_port = s_port
-        self.s_ip = s_ip if s_ip else self.discover()
+        self.sock = None
+        self.port = port
+        self.addr = addr if addr else self.auto_detect()
         self.tasks = dict()
         pass
     
-    def discover(self):
+    def auto_detect(self) -> str:
         o = SHELL_RUN('ip route | grep default').stdout.decode()
         iface_name = re.findall('default via (\\S+) dev (\\S+) .*', o)[0][1]
         o = SHELL_RUN('ip addr').stdout.decode()
@@ -271,39 +272,40 @@ class SlaveDaemon(Handler):
         ##
         print(f'Auto-detect master over {iface_name} ...')
         for _,host in enumerate(all_hosts):
-            s_ip = str(host)
+            addr = str(host)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(0.1)
-            if sock.connect_ex((s_ip, self.s_port)) == 0:
-                self.s_ip = s_ip
-                print(f'Find master on {s_ip}')
-                break
+            if sock.connect_ex((addr, self.port)) == 0:
+                print(f'Find master on {addr}')
+                self.sock = sock
+                sock.settimeout(None)
+                return addr
         raise AutoDetectFailureException('No master found.')
-        pass
 
     def start(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((self.s_ip, self.s_port))
+        if not self.sock:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.connect((self.addr, self.port))
         ## initial register
         name = self.manifest['name']
-        _send(sock, name)
+        _send(self.sock, name)
         print( f'Client "{name}" is now on.' )
         ##
         while True:
             try:
-                msg = _recv(sock)
+                msg = _recv(self.sock)
                 res = self.handle(msg['request'], msg['args'])
             except Exception as e:
                 err = { 'err': UntangledException.format(e) }
-                _send(sock, err)
+                _send(self.sock, err)
             else:
-                _send(sock, res)
+                _send(self.sock, res)
         pass
 
     pass
 
 class MasterDaemon(Handler):
-    def __init__(self, port, ipc_port):
+    def __init__(self, port:int, ipc_port:int):
         self.port = port
         self.ipc_port = ipc_port
         self.clients = dict()
@@ -374,7 +376,7 @@ class Connector(Handler):
         addr (str): (Optional) Specify the IP address of the server, default as ''.
         port (int): (Optional) Specify the port of the server, default as 52525.
     """
-    def __init__(self, client:str='', addr=None, port=None):
+    def __init__(self, client:str='', addr:str='', port:int=0):
         self.client = client
         addr = addr if addr else ''
         port = port if port else IPC_PORT
