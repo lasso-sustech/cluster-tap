@@ -2,24 +2,24 @@
     "name": "example",
     "functions": {
 
-        "run-stream-replay": {
-            "description": "Run stream-replay with default manifest file.",
-            "parameters": {
-                "target_addr": "",
-                "duration": 0
-            },
-            "client-commands": [ "(cd stream-replay; cargo run data/manifest.json $target_addr)" ],
-            "server-commands": [ "(cd stream-replay; ./udp_rx.py -t $duration -p 5202)",
-                                "(cd stream-replay; ./udp_rx.py -t $duration -p 5203)" ],
-            "output": {
-                "throughput-5202": {
-                    "exec":"server", "cmd":"echo $server_output_0",
-                    "format":"Average Throughput: (\\d+\\.\\d+) Mbps"
-                },
-                "length-5203": {
-                    "exec":"client", "cmd":"(cd stream-replay; ./plot.py data/log-5203*.txt)",
-                    "format":"(\\d+\\.\\d+)"
-                }
+        "run-stream-replay-receiver": {
+            "role": "server",
+            "description": "Run stream-replay with default manifest file (receiver part).",
+            "parameters": { "duration": 0 },
+            "commands": [ "(cd stream-replay; ./udp_rx.py -t $duration -p 5202)",
+                          "(cd stream-replay; ./udp_rx.py -t $duration -p 5203)" ],
+            "outputs": {
+                "throughput-5202": { "cmd": "echo output_0", "format": "Average Throughput: (\\d+\\.\\d+) Mbps" }
+            }
+        },
+
+        "run-stream-replay-sender": {
+            "role": "client",
+            "description": "Run stream-replay with default manifest file (sender part).",
+            "parameters": { "target_addr": "" },
+            "commands": [ "(cd stream-replay; cargo run data/manifest.json $target_addr)" ],
+            "outputs": {
+                "length-5203": { "exec":"client", "cmd":"(cd stream-replay; ./plot.py data/log-5203*.txt)", "format":"(\\d+\\.\\d+)" }
             }
         }
 

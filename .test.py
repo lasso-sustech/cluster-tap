@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import json
 import multiprocessing as mp
 import time
 import unittest
@@ -7,14 +6,23 @@ from unittest import TestSuite, TestCase
 
 import tap
 
+MANIFEST = {
+    "name":"test",
+
+    "functions": {
+        "test_empty_content": {},
+        "test_empty_description": {
+            "parameters": {"dummy":""},
+            #TODO:
+        }
+    }
+}
+
 class TapTestCase(TestCase):
     @classmethod
     def setUpClass(cls):
-        manifest = open('./manifest.json')
-        manifest = json.load( manifest )
-        ##
         cls.server = tap.MasterDaemon(tap.SERVER_PORT, tap.IPC_PORT)
-        cls.client = tap.SlaveDaemon(manifest, tap.SERVER_PORT, '127.0.0.1')
+        cls.client = tap.SlaveDaemon(MANIFEST, tap.SERVER_PORT, '127.0.0.1')
         ##
         cls.proc_server = mp.Process(target=cls.server.start)
         cls.proc_client = mp.Process(target=cls.client.start)

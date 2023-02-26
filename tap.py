@@ -73,6 +73,7 @@ def _extract(cmd:str, format:str):
 
 def _execute(role, tasks, tid, config, params, timeout) -> None:
     try:
+        timeout = timeout if timeout>=0 else 999
         exec_params = config['parameters'] if 'parameters' in config else {}
         exec_params.update(params)
         ##
@@ -143,12 +144,14 @@ class Request:
         '''Default server behavior: [server] <--(bypass)--> [proxy].'''
         _request = type(self).__name__
         client, args = args.split('@', maxsplit=1)
-        if client not in self.handler.clients:
+        try:
+            client = self.handler.clients[client]
+        except:
             e = ClientNotFoundException(f'Client "{client}" not exists.')
             res = { 'err': UntangledException.format(e) }
         else:
-            self.handler.clients[client]['tx'].put((_request, args))
-            res = self.handler.clients[client]['rx'].get()
+            client['tx'].put((_request, args))
+            res = client['rx'].get()
         return res
     
     def proxy(self, conn, _tasks:dict, args:dict) -> dict:
@@ -197,30 +200,34 @@ class Handler:
         pass
 
     class execute(Request):
+        def server(self, args: str) -> dict:
+            return super().server(args)
+
         def proxy(self, conn, tasks, args):
             ## load config from client
             p_args = json.loads(args)['args']
-            _request = { 'request':'info', 'args':{'function':p_args['function']} }
+            params, timeout, fn = p_args['params'], p_args['timeout'], p_args['function']
+            _request = { 'request':'info', 'args':{'function':fn} }
             config = _sync(conn, _request)
             ## execute at server-side
-            params = p_args['parameters'] if 'parameters' in p_args else {}
-            timeout = p_args['timeout'] if p_args['timeout']>=0 else 999
-            s_tid = GEN_TID()
-            _thread = threading.Thread(target=_execute, args=('server', tasks, s_tid, config, params, timeout))
-            tasks.update({ s_tid : {'handle':_thread, 'results':{}} })
-            _thread.start()
-            ## use default bypass behavior
-            res = super().proxy(conn, tasks, args)
-            ## update {tid, s_tid} map
-            tid = res['tid']
-            tasks.update({ tid : s_tid })
+            if config['role']=='client':
+                res = super().proxy(conn, tasks, args)
+            else:
+                s_tid = GEN_TID()
+                _thread = threading.Thread(target=_execute, args=('server', tasks, s_tid, config, params, timeout))
+                tasks.update({ s_tid : {'handle':_thread, 'results':{}} })
+                _thread.start()
+                ## use default bypass behavior
+                res = super().proxy(conn, tasks, args)
+                ## bind {tid, s_tid} map
+                tid = res['tid']
+                tasks.update({ tid : s_tid })
             return res
 
         def client(self, args):
-            fn = args['function']
+            params, timeout, fn = args['params'], args['timeout'], args['function']
             config = self.handler.manifest['functions'][fn]
-            params  = args['parameters'] if 'parameters' in args else {}
-            timeout = args['timeout'] if args['timeout']>=0 else 999
+            ##
             tid = GEN_TID()
             _thread = threading.Thread(target=_execute, args=('client', self.handler.tasks, tid, config, params, timeout))
             self.handler.tasks[tid] = {'handle':_thread, 'results':{}}
@@ -230,12 +237,15 @@ class Handler:
 
     class fetch(Request):
         def proxy(self, conn, tasks, args):
-            ## use default bypass behavior
-            client_results = super().proxy(conn, tasks, args)
             ## get s_tid with tid
             args = json.loads(args)
             tid = args['args']['tid']
-            s_tid = tasks[tid]
+            ##
+            if tid in tasks:
+                s_tid = tasks[tid]
+                ## use default bypass behavior
+                client_results = super().proxy(conn, tasks, args)
+            
             ## fetch server-side results
             server_results = tasks[s_tid]['results']
             if not server_results:
