@@ -1,11 +1,12 @@
 {
     "name": "example",
+    "codebase": {},
+
     "functions": {
 
         "run-stream-replay-receiver": {
-            "role": "server",
             "description": "Run stream-replay with default manifest file (receiver part).",
-            "parameters": { "duration": 0 },
+            "parameters": { "duration": 10 },
             "commands": [ "(cd stream-replay; ./udp_rx.py -t $duration -p 5202)",
                           "(cd stream-replay; ./udp_rx.py -t $duration -p 5203)" ],
             "outputs": {
@@ -14,12 +15,20 @@
         },
 
         "run-stream-replay-sender": {
-            "role": "client",
             "description": "Run stream-replay with default manifest file (sender part).",
             "parameters": { "target_addr": "" },
             "commands": [ "(cd stream-replay; cargo run data/manifest.json $target_addr)" ],
             "outputs": {
-                "length-5203": { "exec":"client", "cmd":"(cd stream-replay; ./plot.py data/log-5203*.txt)", "format":"(\\d+\\.\\d+)" }
+                "length-5203": { "cmd":"(cd stream-replay; ./plot.py data/log-5203*.txt)", "format":"(\\d+\\.\\d+)" }
+            }
+        },
+
+        "test": {
+            "description": "test",
+            "parameters": { "dummy": "dummy 1" },
+            "commands": [ "echo $dummy 2" ],
+            "outputs": {
+                "output": { "cmd":"echo $output_0 3", "format":".*" }
             }
         }
 

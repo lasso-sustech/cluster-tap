@@ -22,14 +22,12 @@ SHELL_POPEN = lambda x: sp.Popen(x, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
 SHELL_RUN = lambda x: sp.run(x, stdout=sp.PIPE, stderr=sp.PIPE, check=True, shell=True)
 
 class StdErrException(Exception): pass
-class ClientTimeoutException(Exception): pass
-class ClientNoResponseException(Exception): pass
+class TimeoutException(Exception): pass
+class NoResponseException(Exception): pass
 class InvalidRequestException(Exception): pass
 class AutoDetectFailureException(Exception): pass
 class ClientConnectionLossException(Exception): pass
 class ClientNotFoundException(Exception): pass
-class ServerTimeoutException(Exception): pass
-class ServerNoResponseException(Exception): pass
 
 class UntangledException(Exception):
     def __init__(self, args):
@@ -71,15 +69,14 @@ def _extract(cmd:str, format:str):
         if len(ret)==1: ret=str(ret[0])
     return ret
 
-def _execute(role, tasks, tid, config, params, timeout) -> None:
+def _execute(name, task_pool, tid, config, params, timeout) -> None:
     try:
         timeout = timeout if timeout>=0 else 999
         exec_params = config['parameters'] if 'parameters' in config else {}
         exec_params.update(params)
         ##
-        if f'{role}-commands' not in config:
-            return
-        commands = config[f'{role}-commands'].copy()
+        if 'commands' not in config: return
+        commands = config[f'commands'].copy()
         for i in range(len(commands)):
             for k,v in exec_params.items():
                 commands[i] = commands[i].replace(f'${k}', str(v))
@@ -94,10 +91,7 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
         for i,ret in enumerate(returns):
             if ret is None:
                 processes[i].kill()
-                if role=='client':
-                    raise ClientTimeoutException( f'[{i}]-th {role} command.' )
-                elif role=='server':
-                    raise ServerTimeoutException( f'[{i}]-th {role} command.' )
+                raise TimeoutException( f'{name}, [{i}]-th command.' )
             ##
             if ret != 0:
                 _stderr = processes[i].stderr; assert(not _stderr==None)
@@ -106,21 +100,20 @@ def _execute(role, tasks, tid, config, params, timeout) -> None:
         outputs = dict()
         for i,p in enumerate(processes):
             _stdout = p.stdout; assert(not _stdout==None)
-            outputs.update({ f'${role}_output_{i}' : repr(_stdout.read().decode())  })
+            outputs.update({ f'$output_{i}' : repr(_stdout.read().decode().strip())  })
         ##
         results = dict()
-        for key,value in config['output'].items():
-            if value['exec']==role:
-                cmd, _format = value['cmd'], value['format']
-                for k,o in outputs.items():
-                    cmd = cmd.replace(k,o)
-                for k,v in exec_params.items():
-                    cmd = cmd.replace(f'${k}', str(v))
-                results[key] = _extract(cmd, _format)
+        for key,value in config['outputs'].items():
+            cmd, _format = value['cmd'], value['format']
+            for k,o in outputs.items():
+                cmd = cmd.replace(k,o)
+            for k,v in exec_params.items():
+                cmd = cmd.replace(f'${k}', str(v))
+            results[key] = _extract(cmd, _format)
     except Exception as e:
-        tasks[tid]['results'] = { 'err': UntangledException.format(e) }
+        task_pool[tid]['results'] = { 'err': UntangledException.format(e) }
     else:
-        tasks[tid]['results'] = results
+        task_pool[tid]['results'] = results
     pass
 
 class Request:
@@ -129,32 +122,41 @@ class Request:
     
     def console(self, args:dict) -> dict:
         '''Default console behavior: [console] <--(bypass)--> [server].'''
+        ## --> [server]
         _request = type(self).__name__
         args = {'request':_request, 'args':args}
         msg = '{request} {client}@{args}'.format(
                 request=_request, client=self.handler.client, args=json.dumps(args) ).encode()
         self.handler.sock.send(msg)
-        ##
+        ## <-- [server]
         res = self.handler.sock.recv(4096).decode()
         res = json.loads(res)
-        if 'err' in res: UntangledException(res['err'])
+        if 'err' in res:
+            UntangledException(res['err'])
         return res
 
     def server(self, args:str) -> dict:
         '''Default server behavior: [server] <--(bypass)--> [proxy].'''
         _request = type(self).__name__
-        client, args = args.split('@', maxsplit=1)
+        name, args = args.split('@', maxsplit=1)
+        ## handle at server's side
+        if name in ['', self.handler.name]:
+            req = { '__server_role__':'server', 'args':json.loads(args)['args'] }
+            return req
+        ## else bypass to proxy
         try:
-            client = self.handler.clients[client]
+            client = self.handler.client_pool[name]
         except:
-            e = ClientNotFoundException(f'Client "{client}" not exists.')
+            e = ClientNotFoundException(f'Client "{name}" not exists.')
             res = { 'err': UntangledException.format(e) }
         else:
+            ## --> [proxy]
             client['tx'].put((_request, args))
+            ## <-- [proxy]
             res = client['rx'].get()
         return res
     
-    def proxy(self, conn, _tasks:dict, args:dict) -> dict:
+    def proxy(self, conn, _task_pool:dict, args:dict) -> dict:
         '''Default proxy behavior: [proxy] <--(bypass)--> [client].'''
         return _sync(conn, args, encoding=False)
     
@@ -180,106 +182,85 @@ class Handler:
 
     def proxy(self, client:dict, request:str, args:dict) -> dict:
         handler = getattr(self, request)(self)
-        conn, tasks = client['conn'], client['tasks']
-        return handler.proxy(conn, tasks, args)
+        conn, task_pool = client['conn'], client['task_pool']
+        return handler.proxy(conn, task_pool, args)
 
     class list_all(Request):
         def server(self, _args):
-            return  { k:v['addr'] for k,v in self.handler.clients.items() }
+            return  { k:v['addr'] for k,v in self.handler.client_pool.items() }
         pass
 
     class describe(Request):
+        def server(self, args):
+            req = super().server(args)
+            res = self.client(req['args']) if '__server_role__' in req else req
+            return res
         def client(self, _args):
             return { k:v['description'] for k,v in self.handler.manifest['functions'].items() }
         pass
 
     class info(Request):
         def client(self, args):
-            fn = args['function']
-            return self.handler.manifest['functions'][fn]
+            function = args['function']
+            return self.handler.manifest['functions'][function]
+        def server(self, args):
+            req = super().server(args)
+            res = self.client(req['args']) if '__server_role__' in req else req
+            return res
         pass
 
     class execute(Request):
-        def server(self, args: str) -> dict:
-            return super().server(args)
-
-        def proxy(self, conn, tasks, args):
-            ## load config from client
-            p_args = json.loads(args)['args']
-            params, timeout, fn = p_args['params'], p_args['timeout'], p_args['function']
-            _request = { 'request':'info', 'args':{'function':fn} }
-            config = _sync(conn, _request)
-            ## execute at server-side
-            if config['role']=='client':
-                res = super().proxy(conn, tasks, args)
-            else:
-                s_tid = GEN_TID()
-                _thread = threading.Thread(target=_execute, args=('server', tasks, s_tid, config, params, timeout))
-                tasks.update({ s_tid : {'handle':_thread, 'results':{}} })
-                _thread.start()
-                ## use default bypass behavior
-                res = super().proxy(conn, tasks, args)
-                ## bind {tid, s_tid} map
-                tid = res['tid']
-                tasks.update({ tid : s_tid })
+        def server(self, args):
+            req = super().server(args)
+            res = self.client(req['args']) if '__server_role__' in req else req
             return res
 
         def client(self, args):
-            params, timeout, fn = args['params'], args['timeout'], args['function']
+            params, timeout, fn = args['parameters'], args['timeout'], args['function']
             config = self.handler.manifest['functions'][fn]
             ##
             tid = GEN_TID()
-            _thread = threading.Thread(target=_execute, args=('client', self.handler.tasks, tid, config, params, timeout))
-            self.handler.tasks[tid] = {'handle':_thread, 'results':{}}
+            _thread = threading.Thread(target=_execute, args=(self.handler.name, self.handler.task_pool, tid, config, params, timeout))
+            self.handler.task_pool[tid] = { 'handle':_thread }
             _thread.start()
             return { 'tid': tid }
         pass
 
     class fetch(Request):
-        def proxy(self, conn, tasks, args):
-            ## get s_tid with tid
-            args = json.loads(args)
-            tid = args['args']['tid']
-            ##
-            if tid in tasks:
-                s_tid = tasks[tid]
-                ## use default bypass behavior
-                client_results = super().proxy(conn, tasks, args)
-            
-            ## fetch server-side results
-            server_results = tasks[s_tid]['results']
-            if not server_results:
-                raise ServerNoResponseException('Empty response.')
-            tasks[s_tid]['handle'].join()
-            ##
-            return { **client_results, **server_results }
+        def server(self, args):
+            req = super().server(args)
+            res = self.client(req['args']) if '__server_role__' in req else req
+            return res
         
         def client(self, args):
-            res = self.handler.tasks[ args['tid'] ]['results']
-            if not res:
-                raise ClientNoResponseException('Empty response.')
-            self.handler.tasks[ args['tid'] ]['handle'].join()
+            if 'results' in self.handler.task_pool[ args['tid'] ]:
+                res = self.handler.task_pool[ args['tid'] ]['results']
+            else:
+                raise NoResponseException(f'{self.handler.name}.')
+            self.handler.task_pool[ args['tid'] ]['handle'].join()
             return res
         pass
 
     pass
 
 class SlaveDaemon(Handler):
-    def __init__(self, manifest:dict, port:int, addr:str=''):
+    def __init__(self, port:int, manifest:dict, addr='', alt_name=''):
+        client_name = alt_name if alt_name else manifest['name']
+        self.name = client_name if client_name else f'client-{GEN_TID()}'
         self.manifest = manifest
-        self.sock = None
-        self.port = port
-        self.addr = addr if addr else self.auto_detect()
-        self.tasks = dict()
+        ##
+        self.addr, self.port = addr, port
+        self.task_pool = dict()
         pass
     
-    def auto_detect(self) -> str:
+    def auto_detect(self) -> socket.socket:
+        ## get default gateway
         o = SHELL_RUN('ip route | grep default').stdout.decode()
         iface_name = re.findall('default via (\\S+) dev (\\S+) .*', o)[0][1]
         o = SHELL_RUN('ip addr').stdout.decode()
         iface_network = re.findall(f'.+inet (\\S+).+{iface_name}', o)[0]
         all_hosts = ipaddress.IPv4Network(iface_network, strict=False).hosts()
-        ##
+        ## auto detect brutally
         print(f'Auto-detect master over {iface_name} ...')
         for _,host in enumerate(all_hosts):
             addr = str(host)
@@ -287,51 +268,59 @@ class SlaveDaemon(Handler):
             sock.settimeout(0.1)
             if sock.connect_ex((addr, self.port)) == 0:
                 print(f'Find master on {addr}')
-                self.sock = sock
                 sock.settimeout(None)
-                return addr
+                return sock
         raise AutoDetectFailureException('No master found.')
 
-    def start(self):
-        if not self.sock:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.connect((self.addr, self.port))
-        ## initial register
-        name = self.manifest['name']
-        _send(self.sock, name)
-        print( f'Client "{name}" is now on.' )
-        ##
+    def daemon(self, sock):
         while True:
             try:
-                msg = _recv(self.sock)
+                msg = _recv(sock)
                 res = self.handle(msg['request'], msg['args'])
             except Exception as e:
                 err = { 'err': UntangledException.format(e) }
-                _send(self.sock, err)
+                _send(sock, err)
             else:
-                _send(self.sock, res)
+                _send(sock, res)
+        pass
+
+    def start(self):
+        if self.addr:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((self.addr, self.port))
+        else:
+            sock = self.auto_detect()
+        ## initial register
+        _send(sock, self.name)
+        print( f'Client "{self.name}" is now on.' )
+        ##
+        self.daemon(sock)
         pass
 
     pass
 
 class MasterDaemon(Handler):
-    def __init__(self, port:int, ipc_port:int):
-        self.port = port
-        self.ipc_port = ipc_port
-        self.clients = dict()
+    def __init__(self, port:int, ipc_port:int, manifest={}):
+        self.name = manifest['name'] if 'name' in manifest else ''
+        self.manifest = manifest
+        ##
+        self.port, self.ipc_port = port, ipc_port
+        self.client_pool = dict()
+        self.task_pool = dict()
         pass
 
     def proxy_service(self, name, tx:Queue, rx:Queue):
         while True:
             try:
-                res = self.proxy( self.clients[name], *rx.get() )
+                res = self.proxy( self.client_pool[name], *rx.get() )
             except struct.error:
                 e = ClientConnectionLossException(f'{name} disconnected.')
                 tx.put({ 'err': UntangledException.format(e) })
-                self.clients.pop(name)
+                self.client_pool.pop(name)
                 break
             except Exception as e:
-                tx.put({ 'err': UntangledException.format(e) })
+                err = { 'err': UntangledException.format(e) }
+                tx.put( err )
             else:
                 tx.put( res )
         pass
@@ -345,9 +334,15 @@ class MasterDaemon(Handler):
             msg, addr = sock.recvfrom(1024)
             cmd, args = msg.decode().split(maxsplit=1)
             ##
-            res = self.handle(cmd, args)
-            res = json.dumps(res).encode()
-            sock.sendto(res, addr)
+            try:
+                res = self.handle(cmd, args)
+                res = json.dumps(res).encode()
+            except Exception as e:
+                err = { 'err': UntangledException.format(e) }
+                err = json.dumps(err).encode()
+                sock.sendto(err, addr)
+            else:
+                sock.sendto(res, addr)
             pass
         pass
 
@@ -356,18 +351,20 @@ class MasterDaemon(Handler):
         sock.bind(('0.0.0.0', self.port))
         sock.listen()
         ##
-        print('Server is now on.')
+        print(f'Server {self.name} is now on.')
         while True:
-            ## initial register
             conn, addr = sock.accept()
-            name = _recv(conn)
-            print(f'Client "{name}" connected.')
-            ##
-            tx, rx = Queue(), Queue()
-            handler = threading.Thread(target=self.proxy_service, args=(name, rx, tx))
-            self.clients.update({
-                name:{'handler':handler,'conn':conn,'tasks':{},'addr':addr,'tx':tx,'rx':rx} })
-            handler.start()
+            try:
+                name = _recv(conn)
+                print(f'Client "{name}" connected.')
+            except:
+                print(f'malicious connection detected: {addr}.')
+            else:
+                tx, rx = Queue(), Queue()
+                handler = threading.Thread(target=self.proxy_service, args=(name, rx, tx))
+                self.client_pool.update({
+                    name:{'handler':handler,'conn':conn,'task_pool':{},'addr':addr,'tx':tx,'rx':rx} })
+                handler.start()
         pass
 
     def start(self):
@@ -442,7 +439,12 @@ class Connector(Handler):
     pass
 
 def master_main(args):
-    master = MasterDaemon(args.port, args.ipc_port)
+    try:
+        manifest = open('./manifest.json')
+        manifest = json.load( manifest )
+    except:
+        manifest = {}
+    master = MasterDaemon(args.port, args.ipc_port, manifest=manifest)
     master.start()
     pass
 
@@ -450,7 +452,7 @@ def slave_main(args):
     manifest = open('./manifest.json')
     manifest = json.load( manifest )
     ##
-    slave = SlaveDaemon(manifest, args.port, args.client)
+    slave = SlaveDaemon(args.port, manifest, args.client, alt_name=args.name)
     slave.start()
     pass
 
@@ -464,6 +466,7 @@ def main():
     ##
     c_group = parser.add_argument_group('Client specific')
     c_group.add_argument('-c', '--client', type=str, default='', nargs='?', help='run in client mode.')
+    c_group.add_argument('-n', '--name', type=str, default='', nargs='?', help='(Optional) specify custom client name.')
     ##
     args = parser.parse_args()
     if args.client or args.client==None:
