@@ -29,3 +29,7 @@
     outputs = [ c.fetch(tid) for c,tid in zip(conns,tid_list) ]
     [ results.update(o) for o in outputs ]
     ```
+
+### TODO
+- [ ] codebase sync, from server to clients.
+- [ ] complete test suite and test pass.
