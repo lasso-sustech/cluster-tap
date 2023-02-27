@@ -31,7 +31,6 @@
     ```
 
 ### TODO
-- [ ] add `batch_execute` method.
 - [ ] refactor exception passing route.
 - [ ] codebase sync, from server to clients.
 - [ ] complete test suite and test pass.

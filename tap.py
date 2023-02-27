@@ -120,14 +120,15 @@ class Request:
     def __init__(self, handler):
         self.handler = handler
     
-    def console(self, args:dict) -> dict:
+    def console(self, args, client='') -> dict:
         '''Default console behavior: [console] <--(bypass)--> [server].'''
         ## --> [server]
         _request = type(self).__name__
         args = {'request':_request, 'args':args}
-        msg = '{request} {client}@{args}'.format(
-                request=_request, client=self.handler.client, args=json.dumps(args) ).encode()
-        self.handler.sock.send(msg)
+        client = client if client else self.handler.client
+        req = '{request} {client}@{args}'.format(
+                request=_request, client=client, args=json.dumps(args) ).encode()
+        self.handler.sock.send(req)
         ## <-- [server]
         res = self.handler.sock.recv(4096).decode()
         res = json.loads(res)
@@ -166,18 +167,18 @@ class Request:
 
 class Handler:
     ## console <--> server <--> proxy <--> client
-    def handle(self, request:str, args) -> dict:
+    def handle(self, request:str, args, **kwargs) -> dict:
         try:
             handler = getattr(Handler, request)(self)
         except:
             raise InvalidRequestException(f'Request "{request}" is invalid.')
         ##
         if isinstance(self,MasterDaemon):
-            return handler.server(args)
+            return handler.server(args, **kwargs)
         if isinstance(self,SlaveDaemon):
-            return handler.client(args)
+            return handler.client(args, **kwargs)
         if isinstance(self,Connector):
-            return handler.console(args)
+            return handler.console(args, **kwargs)
         return dict()
 
     def proxy(self, client:dict, request:str, args:dict) -> dict:
@@ -224,6 +225,47 @@ class Handler:
             self.handler.task_pool[tid] = { 'handle':_thread }
             _thread.start()
             return { 'tid': tid }
+        pass
+
+    class batch_execute(Request):
+        def console(self, args:list):
+            ## --> [server]
+            req_args = ' '.join([ f'{x[0]}@{x[1]}' for x in args ])
+            req = f'batch_execute {req_args}'.encode()
+            self.handler.sock.send(req)
+            ## <-- [server]
+            res = self.handler.sock.recv(4096).decode()
+            res = json.loads(res)
+            if 'err' in res:
+                UntangledException(res['err'])
+            return super().console(args)
+
+        def server(self, args: str) -> dict:
+            _handler = Handler.execute(self.handler)
+            results = []
+            ##
+            arguments = zip( *[x.split('@') for x in args.split()] )
+            for (name, args) in arguments:  # type: ignore
+                if name in ['', self.handler.name]:
+                    p_args = json.loads(args)['args']
+                    res = _handler.client(p_args)
+                    results.append( res )
+                else:
+                    try:
+                        client = self.handler.client_pool[name]
+                    except:
+                        results.append( None )
+                    else:
+                        client['tx'].put(('execute', args)) ## --> [proxy]
+                        results.append( '' )
+            ##
+            for i,(name,_) in enumerate(arguments): # type: ignore
+                if results[i]=='':
+                    client = self.handler.client_pool[name]
+                    results[i] = client['rx'].get()['tid']           
+            ##
+            return {'tid_list':results}
+
         pass
 
     class fetch(Request):
@@ -385,6 +427,7 @@ class Connector(Handler):
     """
     def __init__(self, client:str='', addr:str='', port:int=0):
         self.client = client
+        self.batch_pool = list()
         addr = addr if addr else ''
         port = port if port else IPC_PORT
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -436,6 +479,20 @@ class Connector(Handler):
         """
         return self.handle('fetch', {'tid':tid})
 
+    def batch(self, client:str, function:str, parameters:dict={}, timeout:float=-1):
+        args = {'function':function, 'parameters':parameters, 'timeout':timeout}
+        args = ( client, json.dumps(args) )
+        self.batch_pool.append( args )
+        return self
+
+    def apply(self) -> list:
+        res = self.handle('batch_execute', self.batch_pool)
+        return res['tid_list']
+
+    def fetch_batch(self, tid_list) -> list:
+        res = [ self.handle('fetch', {'tid':tid}, client=name) if tid else None
+                    for (name,_),tid in zip(self.batch_pool, tid_list) ]
+        return res
     pass
 
 def master_main(args):
