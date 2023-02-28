@@ -35,9 +35,10 @@ class UntangledException(Exception):
         raise eval(err_cls)(err_msg)
     
     @staticmethod
-    def format(e:Exception):
-        err_cls = type(e).__name__
-        err_msg = str(e) + '\n' + traceback.format_exc()
+    def format(role:str, e:Exception):
+        err_cls = type(e).__name__ 
+        err_msg = '==== {role}: ====\n{err}\n{tb}'.format(
+            role=role, err=str(e), tb=traceback.format_exc() )
         return (err_cls, err_msg)
     pass
 
@@ -45,7 +46,6 @@ def _recv(sock:socket.socket):
     _len = struct.unpack('I', sock.recv(4))[0]
     _msg = sock.recv(_len).decode()
     _msg = json.loads(_msg)
-    # if 'err' in _msg: UntangledException(_msg['err'])
     return _msg
 
 def _send(sock:socket.socket, msg, encoding:bool=True):
@@ -111,7 +111,7 @@ def _execute(name, task_pool, tid, config, params, timeout) -> None:
                 cmd = cmd.replace(f'${k}', str(v))
             results[key] = _extract(cmd, _format)
     except Exception as e:
-        task_pool[tid]['results'] = { 'err': UntangledException.format(e) }
+        task_pool[tid]['results'] = { 'err': UntangledException.format('Client', e) }
     else:
         task_pool[tid]['results'] = results
     pass
@@ -149,7 +149,7 @@ class Request:
             client = self.handler.client_pool[name]
         except:
             e = ClientNotFoundException(f'Client "{name}" not exists.')
-            res = { 'err': UntangledException.format(e) }
+            res = { 'err': UntangledException.format('Server', e) }
         else:
             ## --> [proxy]
             client['tx'].put((_request, args))
@@ -320,7 +320,7 @@ class SlaveDaemon(Handler):
                 msg = _recv(sock)
                 res = self.handle(msg['request'], msg['args'])
             except Exception as e:
-                err = { 'err': UntangledException.format(e) }
+                err = { 'err': UntangledException.format('Client', e) }
                 _send(sock, err)
             else:
                 _send(sock, res)
@@ -357,11 +357,11 @@ class MasterDaemon(Handler):
                 res = self.proxy( self.client_pool[name], *rx.get() )
             except struct.error:
                 e = ClientConnectionLossException(f'{name} disconnected.')
-                tx.put({ 'err': UntangledException.format(e) })
+                tx.put({ 'err': UntangledException.format('Proxy', e) })
                 self.client_pool.pop(name)
                 break
             except Exception as e:
-                err = { 'err': UntangledException.format(e) }
+                err = { 'err': UntangledException.format('Proxy', e) }
                 tx.put( err )
             else:
                 tx.put( res )
@@ -380,7 +380,7 @@ class MasterDaemon(Handler):
                 res = self.handle(cmd, args)
                 res = json.dumps(res).encode()
             except Exception as e:
-                err = { 'err': UntangledException.format(e) }
+                err = { 'err': UntangledException.format('Server', e) }
                 err = json.dumps(err).encode()
                 sock.sendto(err, addr)
             else:

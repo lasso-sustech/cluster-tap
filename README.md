@@ -24,13 +24,20 @@
                     for c in conns ]
     
     # wait for possible completion, and fetch the results as tuple
-    time.sleep(11)
+    time.sleep(12)
     results = dict()
     outputs = [ c.fetch(tid) for c,tid in zip(conns,tid_list) ]
+    [ results.update(o) for o in outputs ]
+
+    ## or, you can batch execute in script-style
+    params = {'target_addr':'127.0.0.1', 'duration':10}
+    results = dict()
+    outputs = conn.batch('client-01', 'run-stream-replay', params, timeout=10) \
+                  .batch('client-02', 'run-stream-replay', params, timeout=10) \
+                  .apply().wait(12).batch_fetch()
     [ results.update(o) for o in outputs ]
     ```
 
 ### TODO
-- [ ] refactor exception passing route.
 - [ ] codebase sync, from server to clients.
 - [ ] complete test suite and test pass.
