@@ -472,26 +472,68 @@ class Connector(Handler):
         """Fetch the previous function execution results with task id.
         
         Args:
-            tid (std): Task ID obtained from `Connector.execute`.
+            tid (str): Task ID obtained from `Connector.execute`.
         
         Returns:
             dict: the output collected in dictionary struct.
         """
         return self.handle('fetch', {'tid':tid})
 
+    def wait(self, duration:float):
+        """Blocking waiting for some duration (in seconds)
+
+        Args: 
+            duration (float): The waiting time in seconds.
+
+        Returns:
+            Self: used for chain call.
+        """
+        time.sleep(duration)
+        return self
+
     def batch(self, client:str, function:str, parameters:dict={}, timeout:float=-1):
+        """Batch execution by simultaneously sending commands, then use `.apply` to apply send action.
+
+        Args:
+            client (str): The client name (or the server name).
+            function (str): The function names.
+            parameters (dict): The parameters provided for the function. The absent values will use the default values in the manifest.
+            timeout (float): The longest time in seconds waiting for the outputs from function execution.
+        
+        Returns:
+            Self: used for chain call.
+        """
         args = {'function':function, 'parameters':parameters, 'timeout':timeout}
         args = ( client, json.dumps(args) )
         self.batch_pool.append( args )
         return self
 
-    def apply(self) -> list:
-        res = self.handle('batch_execute', self.batch_pool)
-        return res['tid_list']
+    def apply(self):
+        """Apply the batch execution previously defined via `.batch`.
 
-    def fetch_batch(self, tid_list) -> list:
+        Args:
+            None.
+        
+        Returns:
+            Self: used for chain call.
+        """
+        res = self.handle('batch_execute', self.batch_pool)
+        tid_list = res['tid_list']
+        self.batch_pool = [ (name,tid) for (name,_),tid in zip(self.batch_pool, tid_list) ]
+        return self
+
+    def batch_fetch(self) -> list:
+        """Fetch the batch execution results.
+
+        Args:
+            None.
+        
+        Returns:
+            list: The results in list in the order of batching enqueue sequence.
+        """
         res = [ self.handle('fetch', {'tid':tid}, client=name) if tid else None
-                    for (name,_),tid in zip(self.batch_pool, tid_list) ]
+                    for (name,tid) in self.batch_pool ]
+        self.batch_pool = []
         return res
     pass
 
