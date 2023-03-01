@@ -33,8 +33,8 @@ class ClientNotFoundException(Exception): pass
 class UntangledException(Exception):
     def __init__(self, args):
         err_cls, err_msg = args
-        err_msg = f'\b:{err_cls} {err_msg}'
-        raise Exception(err_msg)
+        # err_msg = f'\b:{err_cls} {err_msg}'
+        raise eval(err_cls)(err_msg)
     
     @staticmethod
     def format(role:str, e:Exception):
@@ -77,8 +77,7 @@ def _execute(name, task_pool, tid, config, params, timeout) -> None:
         exec_params = config['parameters'] if 'parameters' in config else {}
         exec_params.update(params)
         ##
-        if 'commands' not in config: return
-        commands = config[f'commands'].copy()
+        commands = config['commands'].copy() if 'commands' in config else []
         for i in range(len(commands)):
             for k,v in exec_params.items():
                 commands[i] = commands[i].replace(f'${k}', str(v))
@@ -88,7 +87,7 @@ def _execute(name, task_pool, tid, config, params, timeout) -> None:
         _now = time.time()
         while None in returns and time.time() - _now < timeout:
             returns = [ proc.poll() for proc in processes ]
-            time.sleep(10E-3)
+            time.sleep(0.001)
         ##
         for i,ret in enumerate(returns):
             if ret is None:
@@ -105,7 +104,8 @@ def _execute(name, task_pool, tid, config, params, timeout) -> None:
             outputs.update({ f'$output_{i}' : repr(_stdout.read().decode().strip())  })
         ##
         results = dict()
-        for key,value in config['outputs'].items():
+        output_items = config['outputs'].items() if 'outputs' in config else dict()
+        for key,value in output_items:
             cmd, _format = value['cmd'], value['format']
             for k,o in outputs.items():
                 cmd = cmd.replace(k,o)
@@ -264,7 +264,7 @@ class Handler:
             for i,(name,_) in enumerate(arguments):
                 if results[i]=='':
                     client = self.handler.client_pool[name]
-                    results[i] = client['rx'].get()['tid']  ## --> [proxy]
+                    results[i] = client['rx'].get()['tid']  ## <-- [proxy]
             ##
             return {'tid_list':results}
 

@@ -42,4 +42,3 @@
 
 ### TODO
 - [ ] codebase sync, from server to clients.
-- [ ] complete test suite and test pass.

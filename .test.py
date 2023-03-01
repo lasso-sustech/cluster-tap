@@ -11,24 +11,27 @@ MANIFEST = {
     "codebase": {},
 
     "functions": {
-        "test_no_content": {},
         "test_no_action": {
-            "description":"empty action"
+            "description":"test_no_action"
         },
         "test_no_parameters": {
+            "description":"test_no_parameters",
             "commands": ["echo no_parameters"],
             "outputs": { "output":{"cmd":"echo $output_0","format":".*"} }
         },
         "test_no_commands": {
+            "description":"test_no_commands",
             "parameters": {"param":"no_commands"},
             "outputs": { "output":{"cmd":"echo $param","format":".*"} }
         },
         "test_no_outputs": {
+            "description":"test_no_outputs",
             "parameters": {"param":"dummy"},
             "commands": ["echo no_output"]
         },
         ##
         "test_command_index": {
+            "description":"test_command_index",
             "parameters": {"p1":1, "p2":"2", "p3":3.3},
             "commands": ["echo $p1", "echo $p2", "echo $p3"],
             "outputs": { "output3":{"cmd":"echo $output_2","format":".*"} }
@@ -45,14 +48,17 @@ class TapTestCase(TestCase):
         cls.proc_server = mp.Process(target=cls.server.start)
         cls.proc_client = mp.Process(target=cls.client.start)
         cls.proc_server.start()
+        time.sleep(0.01)
         cls.proc_client.start()
-        time.sleep(0.001)
+        time.sleep(0.01)
         pass
 
     @classmethod
     def tearDownClass(cls):
-        cls.proc_client.terminate()
-        cls.proc_server.terminate()
+        cls.proc_client.kill()
+        time.sleep(0.01)
+        cls.proc_server.kill()
+        time.sleep(0.01)
         pass
     pass
 
@@ -85,10 +91,36 @@ class TestManifestFetch(TapTestCase):
             pass
 
 class TestClientFunctionExecution(TapTestCase):
-    def test_no_content(self):
+    def test_no_action(self):
         c = tap.Connector('test')
-        tid = c.execute('test_no_content')
+        tid = c.execute('test_no_action')
+        time.sleep(0.01)
         c.fetch(tid)
+    
+    def test_no_parameters(self):
+        c = tap.Connector('test')
+        tid = c.execute('test_no_parameters')
+        time.sleep(0.01)
+        c.fetch(tid)
+    
+    def test_no_commands(self):
+        c = tap.Connector('test')
+        tid = c.execute('test_no_commands')
+        time.sleep(0.01)
+        c.fetch(tid)
+    
+    def test_no_outputs(self):
+        c = tap.Connector('test')
+        tid = c.execute('test_no_outputs')
+        time.sleep(0.01)
+        c.fetch(tid)
+    
+    def test_command_index(self):
+        c = tap.Connector('test')
+        tid = c.execute('test_command_index')
+        time.sleep(0.01)
+        c.fetch(tid)
+    
 
 if __name__=='__main__':
     unittest.main()
