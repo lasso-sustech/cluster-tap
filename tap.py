@@ -3,6 +3,7 @@ from abc import abstractmethod
 import argparse
 import ipaddress
 import json
+import os
 import random
 import re
 import socket
@@ -32,12 +33,13 @@ class ClientNotFoundException(Exception): pass
 class UntangledException(Exception):
     def __init__(self, args):
         err_cls, err_msg = args
-        raise eval(err_cls)(err_msg)
+        err_msg = f'\b:{err_cls} {err_msg}'
+        raise Exception(err_msg)
     
     @staticmethod
     def format(role:str, e:Exception):
         err_cls = type(e).__name__ 
-        err_msg = '==== {role}: ====\n{err}\n{tb}'.format(
+        err_msg = '\b:[[{role}]]: {err}\n{tb}'.format(
             role=role, err=str(e), tb=traceback.format_exc() )
         return (err_cls, err_msg)
     pass
@@ -86,7 +88,7 @@ def _execute(name, task_pool, tid, config, params, timeout) -> None:
         _now = time.time()
         while None in returns and time.time() - _now < timeout:
             returns = [ proc.poll() for proc in processes ]
-            time.sleep(0.1)
+            time.sleep(10E-3)
         ##
         for i,ret in enumerate(returns):
             if ret is None:
@@ -230,7 +232,7 @@ class Handler:
     class batch_execute(Request):
         def console(self, args:list):
             ## --> [server]
-            req_args = ' '.join([ f'{x[0]}@{x[1]}' for x in args ])
+            req_args = '##'.join([ f'{x[0]}@{x[1]}' for x in args ])
             req = f'batch_execute {req_args}'.encode()
             self.handler.sock.send(req)
             ## <-- [server]
@@ -238,16 +240,16 @@ class Handler:
             res = json.loads(res)
             if 'err' in res:
                 UntangledException(res['err'])
-            return super().console(args)
+            return res
 
         def server(self, args: str) -> dict:
             _handler = Handler.execute(self.handler)
             results = []
             ##
-            arguments = zip( *[x.split('@') for x in args.split()] )
-            for (name, args) in arguments:  # type: ignore
+            arguments = [x.split('@') for x in args.split('##')]
+            for (name, args) in arguments:
                 if name in ['', self.handler.name]:
-                    p_args = json.loads(args)['args']
+                    p_args = json.loads(args)
                     res = _handler.client(p_args)
                     results.append( res )
                 else:
@@ -259,10 +261,10 @@ class Handler:
                         client['tx'].put(('execute', args)) ## --> [proxy]
                         results.append( '' )
             ##
-            for i,(name,_) in enumerate(arguments): # type: ignore
+            for i,(name,_) in enumerate(arguments):
                 if results[i]=='':
                     client = self.handler.client_pool[name]
-                    results[i] = client['rx'].get()['tid']           
+                    results[i] = client['rx'].get()['tid']  ## --> [proxy]
             ##
             return {'tid_list':results}
 
@@ -479,18 +481,6 @@ class Connector(Handler):
         """
         return self.handle('fetch', {'tid':tid})
 
-    def wait(self, duration:float):
-        """Blocking waiting for some duration (in seconds)
-
-        Args: 
-            duration (float): The waiting time in seconds.
-
-        Returns:
-            Self: used for chain call.
-        """
-        time.sleep(duration)
-        return self
-
     def batch(self, client:str, function:str, parameters:dict={}, timeout:float=-1):
         """Batch execution by simultaneously sending commands, then use `.apply` to apply send action.
 
@@ -508,6 +498,30 @@ class Connector(Handler):
         self.batch_pool.append( args )
         return self
 
+    def batch_wait(self, duration:float):
+        """Blocking waiting for some duration (in seconds).
+
+        Args: 
+            duration (float): The waiting time in seconds.
+
+        Returns:
+            Self: used for chain call.
+        """
+        self.batch_pool.append(duration)
+        return self
+
+    def batch_fetch(self):
+        """Fetch the batch execution results.
+
+        Args:
+            None.
+        
+        Returns:
+            list: The results in list in the order of batching enqueue sequence.
+        """
+        self.batch_pool.append('fetch')
+        return self
+    
     def apply(self):
         """Apply the batch execution previously defined via `.batch`.
 
@@ -517,24 +531,30 @@ class Connector(Handler):
         Returns:
             Self: used for chain call.
         """
-        res = self.handle('batch_execute', self.batch_pool)
-        tid_list = res['tid_list']
-        self.batch_pool = [ (name,tid) for (name,_),tid in zip(self.batch_pool, tid_list) ]
-        return self
+        task_list, tid_list, outputs = list(), list(), list()
+        for item in self.batch_pool:
+            if isinstance(item, tuple):
+                task_list.append( item )
+                continue
+            ##
+            if task_list:
+                res = self.handle('batch_execute', task_list)
+                res = res['tid_list']
+                res = [ (name,tid) for (name,_),tid in zip(task_list, res) ]
+                tid_list.extend( res )
+                task_list = list() #cleanup
+            ##
+            if isinstance(item, str) and item=='fetch':
+                res = [ self.handle('fetch', tid, client=name) if tid['tid'] else None
+                    for (name,tid) in tid_list ]
+                outputs.extend( res )
+                tid_list = list() #cleanup
+                continue
+            if isinstance(item, float) or isinstance(item, int):
+                time.sleep(item)
+                continue
+        return outputs
 
-    def batch_fetch(self) -> list:
-        """Fetch the batch execution results.
-
-        Args:
-            None.
-        
-        Returns:
-            list: The results in list in the order of batching enqueue sequence.
-        """
-        res = [ self.handle('fetch', {'tid':tid}, client=name) if tid else None
-                    for (name,tid) in self.batch_pool ]
-        self.batch_pool = []
-        return res
     pass
 
 def master_main(args):
