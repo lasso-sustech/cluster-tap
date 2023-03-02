@@ -202,6 +202,15 @@ class Handler:
             return { k:v['description'] for k,v in self.handler.manifest['functions'].items() }
         pass
 
+    class reload(Request):
+        def server(self, args):
+            req = super().server(args)
+            res = self.client(req['args']) if '__server_role__' in req else req
+            return res
+        def client(self, _args):
+            self.handler.reload()
+            return {'res':True}
+
     class info(Request):
         def client(self, args):
             function = args['function']
@@ -296,7 +305,14 @@ class SlaveDaemon(Handler):
         self.addr, self.port = addr, port
         self.task_pool = dict()
         pass
-    
+
+    def reload(self):
+        manifest = open('./manifest.json')
+        manifest = json.load( manifest )
+        self.manifest = manifest
+        print(f'{time.ctime()}: Manifest reloaded.')
+        pass
+
     def auto_detect(self) -> socket.socket:
         ## get default gateway
         o = SHELL_RUN('ip route | grep default').stdout.decode()
@@ -351,6 +367,13 @@ class MasterDaemon(Handler):
         self.port, self.ipc_port = port, ipc_port
         self.client_pool = dict()
         self.task_pool = dict()
+        pass
+
+    def reload(self):
+        manifest = open('./manifest.json')
+        manifest = json.load( manifest )
+        self.manifest = manifest
+        print(f'{time.ctime()}: Manifest reloaded.')
         pass
 
     def proxy_service(self, name, tx:Queue, rx:Queue):
@@ -444,6 +467,10 @@ class Connector(Handler):
         """Return the available functions on the connected client."""
         return self.handle('describe', {})
     
+    def reload(self) -> dict:
+        """Request remote manifest to reload."""
+        return self.handle('reload', {})
+
     def info(self, function:str) -> dict:
         """Return the details of the function on the connected client.
         
