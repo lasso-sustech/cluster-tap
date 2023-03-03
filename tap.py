@@ -4,12 +4,15 @@ import argparse
 import ipaddress
 import json
 import os
+from pathlib import Path
 import random
 import re
+import shutil
 import socket
 import string
 import struct
 import subprocess as sp
+from tempfile import NamedTemporaryFile
 import threading
 import time
 import traceback
@@ -17,6 +20,7 @@ from queue import Queue
 
 SERVER_PORT = 11112
 IPC_PORT    = 52525
+CHUNK_SIZE  = 4096
 
 GEN_TID = lambda: ''.join([random.choice(string.ascii_letters) for _ in range(8)])
 SHELL_POPEN = lambda x: sp.Popen(x, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
@@ -29,6 +33,7 @@ class InvalidRequestException(Exception): pass
 class AutoDetectFailureException(Exception): pass
 class ClientConnectionLossException(Exception): pass
 class ClientNotFoundException(Exception): pass
+class CodebaseNonExistException(Exception): pass
 
 class UntangledException(Exception):
     def __init__(self, args):
@@ -46,18 +51,69 @@ class UntangledException(Exception):
 
 def _recv(sock:socket.socket):
     _len = struct.unpack('I', sock.recv(4))[0]
-    _msg = sock.recv(_len).decode()
+    _msg = sock.recv(_len)
+    return _msg
+
+def _send(sock:socket.socket, msg):
+    if isinstance(msg, bytes):
+        _msg = msg
+    elif isinstance(msg, str):
+        _msg = msg.encode()
+    else:
+        _msg = json.dumps(msg).encode()
+    ##
+    _len = struct.pack('I', len(_msg))
+    _msg = _len + _msg
+    sock.send(_msg)
+    pass
+
+def _sync(sock:socket.socket, msg):
+    _send(sock, msg)
+    _msg = _recv(sock).decode()
     _msg = json.loads(_msg)
     return _msg
 
-def _send(sock:socket.socket, msg, encoding:bool=True):
-    _msg = json.dumps(msg).encode() if encoding else msg.encode()
-    _len = struct.pack('I', len(_msg))
-    sock.send( _len + _msg )
+def _send_file(sock:socket.socket, file_glob:str):
+    file_list = Path(__file__).parent.glob(file_glob)
+    for _file in file_list:
+        file_name = _file.relative_to( Path.cwd() )
+        print(f'Sending {file_name} ... ', end='')
+        with open(_file, 'rb') as fd:
+            fd.seek(0, os.SEEK_END)
+            file_len = fd.tell()
+            fd.seek(0, 0)
+            trunk_num = file_len // CHUNK_SIZE
+            ## (1) send file name
+            _send(sock, file_name)
+            ## (2) send chunks
+            for i in range(trunk_num):
+                _send(sock, fd.read(CHUNK_SIZE))
+            ## (3) send remains
+            _send(sock, fd.read())
+            _send(sock, '') #finalize file sending
+        print('done.')
+    _send(sock, '') #finalize sending
+    pass
 
-def _sync(sock:socket.socket, msg, encoding=True, decoding=True):
-    _send(sock, msg, encoding)
-    return _recv(sock)
+def _recv_file(sock:socket.socket, file_glob:str):
+    while True:
+        with NamedTemporaryFile() as fd:
+            ## (1) recv file name
+            file_name = _recv(sock).decode()
+            if not file_name: break
+            ## (2) recv chunks until end
+            while True:
+                _chunk = _recv(sock)
+                if not _chunk: break
+                fd.write(_chunk)
+            fd.flush()
+            ## (3) copy to codebase
+            if Path(file_name).match(file_glob):
+                Path(file_name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(fd.name, file_name)
+            else:
+                print(f'{file_name} is rejected.')
+    pass
 
 def _extract(cmd:str, format:str):
     try:
@@ -87,7 +143,7 @@ def _execute(name, task_pool, tid, config, params, timeout) -> None:
         _now = time.time()
         while None in returns and time.time() - _now < timeout:
             returns = [ proc.poll() for proc in processes ]
-            time.sleep(0.001)
+            time.sleep(0.005)
         ##
         for i,ret in enumerate(returns):
             if ret is None:
@@ -159,9 +215,9 @@ class Request:
             res = client['rx'].get()
         return res
     
-    def proxy(self, conn, _task_pool:dict, args:dict) -> dict:
+    def proxy(self, conn, _name:str, _task_pool:dict, args:dict) -> dict:
         '''Default proxy behavior: [proxy] <--(bypass)--> [client].'''
-        return _sync(conn, args, encoding=False)
+        return _sync(conn, args)
     
     @abstractmethod
     def client(self, args:dict) -> dict: pass
@@ -183,10 +239,10 @@ class Handler:
             return handler.console(args, **kwargs)
         return dict()
 
-    def proxy(self, client:dict, request:str, args:dict) -> dict:
+    def proxy(self, name:str, client:dict, request:str, args:dict) -> dict:
         handler = getattr(self, request)(self)
         conn, task_pool = client['conn'], client['task_pool']
-        return handler.proxy(conn, task_pool, args)
+        return handler.proxy(conn, name, task_pool, args)
 
     class list_all(Request):
         def server(self, _args):
@@ -294,6 +350,35 @@ class Handler:
             return res
         pass
 
+    class sync_code(Request):
+        def proxy(self, conn, name: str, _task_pool: dict, args: dict) -> dict:
+            res = super().proxy(conn, name, _task_pool, args)
+            if 'err' in res:
+                return res
+            ##
+            basename = args['basename']
+            codebase = self.handler.manifest['codebase']
+            if basename not in codebase:
+                raise CodebaseNonExistException(basename)
+            ##
+            file_glob = codebase[basename]
+            file_glob = (Path(name) / file_glob).as_posix()
+            _send_file(conn, file_glob)
+            return {'res':True}
+        
+        def client(self, args: dict) -> dict:
+            basename = args['basename']
+            codebase = self.handler.manifest['codebase']
+            if basename not in codebase:
+                raise CodebaseNonExistException(basename)
+            else:
+                _send(self.handler.sock, {'res':True})
+            ##
+            file_glob = codebase[basename]
+            _recv_file(self.handler.sock, file_glob)
+            return {'res':True}
+        pass
+
     pass
 
 class SlaveDaemon(Handler):
@@ -335,7 +420,7 @@ class SlaveDaemon(Handler):
     def daemon(self, sock):
         while True:
             try:
-                msg = _recv(sock)
+                msg = json.loads( _recv(sock).decode() )
                 res = self.handle(msg['request'], msg['args'])
             except Exception as e:
                 err = { 'err': UntangledException.format('Client', e) }
@@ -346,15 +431,15 @@ class SlaveDaemon(Handler):
 
     def start(self):
         if self.addr:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((self.addr, self.port))
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.connect((self.addr, self.port))
         else:
-            sock = self.auto_detect()
+            self.sock = self.auto_detect()
         ## initial register
-        _send(sock, self.name)
+        _send(self.sock, {'name':self.name})
         print( f'Client "{self.name}" is now on.' )
         ##
-        self.daemon(sock)
+        self.daemon(self.sock)
         pass
 
     pass
@@ -379,7 +464,7 @@ class MasterDaemon(Handler):
     def proxy_service(self, name, tx:Queue, rx:Queue):
         while True:
             try:
-                res = self.proxy( self.client_pool[name], *rx.get() )
+                res = self.proxy( name, self.client_pool[name], *rx.get() )
             except struct.error:
                 e = ClientConnectionLossException(f'{name} disconnected.')
                 tx.put({ 'err': UntangledException.format('Proxy', e) })
@@ -398,7 +483,7 @@ class MasterDaemon(Handler):
         ##
         print('IPC Daemon is now on.')
         while True:
-            msg, addr = sock.recvfrom(1024)
+            msg, addr = sock.recvfrom(4096)
             cmd, args = msg.decode().split(maxsplit=1)
             ##
             try:
@@ -422,7 +507,7 @@ class MasterDaemon(Handler):
         while True:
             conn, addr = sock.accept()
             try:
-                name = _recv(conn)
+                name = json.loads( _recv(conn).decode() )['name']
                 print(f'Client "{name}" connected.')
             except:
                 print(f'malicious connection detected: {addr}.')
@@ -468,7 +553,11 @@ class Connector(Handler):
         return self.handle('describe', {})
     
     def reload(self) -> dict:
-        """Request remote manifest to reload."""
+        """Request remote manifest to reload.
+        
+        Returns:
+            dict: The response information.
+        """
         return self.handle('reload', {})
 
     def info(self, function:str) -> dict:
@@ -582,14 +671,26 @@ class Connector(Handler):
                 continue
         return outputs
 
+    def sync_code(self, basename:str):
+        """Push the codebase on server to the client.
+
+        Args:
+            basename (str): The codebase name.
+        
+        Returns:
+            dict: The response information.
+        """
+        return self.handle('sync_code', {'basename':basename})
+
     pass
 
 def master_main(args):
     try:
         manifest = open('./manifest.json')
-        manifest = json.load( manifest )
     except:
         manifest = {}
+    else:
+        manifest = json.load( manifest )
     master = MasterDaemon(args.port, args.ipc_port, manifest=manifest)
     master.start()
     pass

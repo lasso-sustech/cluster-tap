@@ -45,4 +45,4 @@ outputs = ( conn.batch('server', 'run-server', params, timeout=11)
 ```
 
 ### TODO
-- [ ] codebase sync, push from console to server/clients.
+- [ ] codebase sync, push from server to clients.

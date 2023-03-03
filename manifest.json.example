@@ -1,6 +1,10 @@
 {
     "name": "example",
-    "codebase": {},
+    "codebase": {
+        "manifest": "manifest.json",
+        "replay_config": "stream-replay/data/manifest.json",
+        "npy_files": "stream-replay/data/*.npy"
+    },
 
     "functions": {
 
