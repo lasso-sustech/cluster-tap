@@ -4,7 +4,7 @@
 - copy `tap.py` to the server, next to server's function code.
 - create `manifest.json` file following the format in `manifest.json.example`
   - **The manifest file is not mandatory**, if no function will be executed on server;
-  - The name of server could be neglected, with default value `''`.
+  - The name section is always neglected, with default value `''`.
 - run `tap.py -s` as server, waiting for clients connection.
 
 **Client Side**:
@@ -43,6 +43,3 @@ outputs = ( conn.batch('server', 'run-server', params, timeout=11)
                 .batch_fetch() ).apply()
 [ results.update(o) for o in outputs ]
 ```
-
-### TODO
-- [ ] codebase sync, push from server to clients.

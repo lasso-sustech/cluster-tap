@@ -26,6 +26,7 @@ GEN_TID = lambda: ''.join([random.choice(string.ascii_letters) for _ in range(8)
 SHELL_POPEN = lambda x: sp.Popen(x, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
 SHELL_RUN = lambda x: sp.run(x, stdout=sp.PIPE, stderr=sp.PIPE, check=True, shell=True)
 
+class KeyException(Exception): pass #alias to `KeyError`
 class StdErrException(Exception): pass
 class TimeoutException(Exception): pass
 class NoResponseException(Exception): pass
@@ -38,6 +39,7 @@ class CodebaseNonExistException(Exception): pass
 class UntangledException(Exception):
     def __init__(self, args):
         err_cls, err_msg = args
+        if err_cls=='KeyError': err_cls='KeyException'
         # err_msg = f'\b:{err_cls} {err_msg}'
         raise eval(err_cls)(err_msg)
     
@@ -76,8 +78,8 @@ def _sync(sock:socket.socket, msg):
 def _send_file(sock:socket.socket, file_glob:str):
     file_list = Path(__file__).parent.glob(file_glob)
     for _file in file_list:
-        file_name = _file.relative_to( Path.cwd() )
-        print(f'Sending {file_name} ... ', end='')
+        file_name = _file.relative_to( Path.cwd() ).as_posix()
+        print(f'Sending "{file_name}" ... ', end='', flush=True)
         with open(_file, 'rb') as fd:
             fd.seek(0, os.SEEK_END)
             file_len = fd.tell()
@@ -111,8 +113,9 @@ def _recv_file(sock:socket.socket, file_glob:str):
             if Path(file_name).match(file_glob):
                 Path(file_name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(fd.name, file_name)
+                print(f'"{file_name}" received.')
             else:
-                print(f'{file_name} is rejected.')
+                print(f'"{file_name}" rejected.')
     pass
 
 def _extract(cmd:str, format:str):
@@ -143,7 +146,7 @@ def _execute(name, task_pool, tid, config, params, timeout) -> None:
         _now = time.time()
         while None in returns and time.time() - _now < timeout:
             returns = [ proc.poll() for proc in processes ]
-            time.sleep(0.005)
+            time.sleep(0.001)
         ##
         for i,ret in enumerate(returns):
             if ret is None:
@@ -215,7 +218,7 @@ class Request:
             res = client['rx'].get()
         return res
     
-    def proxy(self, conn, _name:str, _task_pool:dict, args:dict) -> dict:
+    def proxy(self, conn, _name:str, _task_pool:dict, args:str) -> dict:
         '''Default proxy behavior: [proxy] <--(bypass)--> [client].'''
         return _sync(conn, args)
     
@@ -239,7 +242,7 @@ class Handler:
             return handler.console(args, **kwargs)
         return dict()
 
-    def proxy(self, name:str, client:dict, request:str, args:dict) -> dict:
+    def proxy(self, name:str, client:dict, request:str, args:str) -> dict:
         handler = getattr(self, request)(self)
         conn, task_pool = client['conn'], client['task_pool']
         return handler.proxy(conn, name, task_pool, args)
@@ -351,12 +354,13 @@ class Handler:
         pass
 
     class sync_code(Request):
-        def proxy(self, conn, name: str, _task_pool: dict, args: dict) -> dict:
+        def proxy(self, conn, name: str, _task_pool: dict, args: str) -> dict:
             res = super().proxy(conn, name, _task_pool, args)
             if 'err' in res:
                 return res
             ##
-            basename = args['basename']
+            p_args = json.loads(args)['args']
+            basename = p_args['basename']
             codebase = self.handler.manifest['codebase']
             if basename not in codebase:
                 raise CodebaseNonExistException(basename)
@@ -446,7 +450,7 @@ class SlaveDaemon(Handler):
 
 class MasterDaemon(Handler):
     def __init__(self, port:int, ipc_port:int, manifest={}):
-        self.name = manifest['name'] if 'name' in manifest else ''
+        self.name = ''
         self.manifest = manifest
         ##
         self.port, self.ipc_port = port, ipc_port
@@ -503,7 +507,7 @@ class MasterDaemon(Handler):
         sock.bind(('0.0.0.0', self.port))
         sock.listen()
         ##
-        print(f'Server {self.name} is now on.')
+        print(f'Server is now on.')
         while True:
             conn, addr = sock.accept()
             try:
