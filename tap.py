@@ -75,7 +75,7 @@ def _sync(sock:socket.socket, msg):
     _msg = json.loads(_msg)
     return _msg
 
-def _send_file(sock:socket.socket, file_glob:str):
+def _send_file(sock:socket.socket, file_glob:str) -> None:
     file_list = Path(__file__).parent.glob(file_glob)
     for _file in file_list:
         file_name = _file.relative_to( Path.cwd() ).as_posix()
@@ -97,25 +97,30 @@ def _send_file(sock:socket.socket, file_glob:str):
     _send(sock, '') #finalize sending
     pass
 
-def _recv_file(sock:socket.socket, file_glob:str):
-    while True:
-        with NamedTemporaryFile() as fd:
-            ## (1) recv file name
-            file_name = _recv(sock).decode()
-            if not file_name: break
-            ## (2) recv chunks until end
-            while True:
-                _chunk = _recv(sock)
-                if not _chunk: break
-                fd.write(_chunk)
-            fd.flush()
-            ## (3) copy to codebase
-            if Path(file_name).match(file_glob):
-                Path(file_name).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(fd.name, file_name)
-                print(f'"{file_name}" received.')
-            else:
-                print(f'"{file_name}" rejected.')
+def _recv_file(sock:socket.socket, file_glob:str) -> None:
+    try:
+        sock.settimeout(1.0)
+        while True:
+            with NamedTemporaryFile() as fd:
+                ## (1) recv file name
+                file_name = _recv(sock).decode()
+                if not file_name: break
+                ## (2) recv chunks until end
+                while True:
+                    _chunk = _recv(sock)
+                    if not _chunk: break
+                    fd.write(_chunk)
+                fd.flush()
+                ## (3) copy to codebase
+                if Path(file_name).match(file_glob):
+                    Path(file_name).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(fd.name, file_name)
+                    print(f'"{file_name}" received.')
+                else:
+                    print(f'"{file_name}" rejected.')
+    except Exception as e:
+        sock.settimeout(None)
+        raise e
     pass
 
 def _extract(cmd:str, format:str):
@@ -312,29 +317,33 @@ class Handler:
 
         def server(self, args: str) -> dict:
             _handler = Handler.execute(self.handler)
-            results = []
+            results = list()
             ##
             arguments = [x.split('@') for x in args.split('##')]
             for (name, args) in arguments:
                 if name in ['', self.handler.name]:
-                    p_args = json.loads(args)
+                    p_args = json.loads(args)['args']
                     res = _handler.client(p_args)
-                    results.append( res )
+                    res.setdefault('err'); res.setdefault('tid') # type: ignore
                 else:
                     try:
                         client = self.handler.client_pool[name]
-                    except:
-                        results.append( None )
+                    except Exception as e:
+                        res = { 'tid':None, 'err': UntangledException.format('Server', e) }
                     else:
                         client['tx'].put(('execute', args)) ## --> [proxy]
-                        results.append( '' )
+                        res = { 'tid':'',   'err':None }
+                results.append(res)
             ##
             for i,(name,_) in enumerate(arguments):
-                if results[i]=='':
+                if results[i]['tid']=='':
                     client = self.handler.client_pool[name]
-                    results[i] = client['rx'].get()['tid']  ## <-- [proxy]
+                    res = client['rx'].get()  ## <-- [proxy]
+                    res.setdefault('err'); res.setdefault('tid') # type: ignore
+                    results[i] = res
             ##
-            return {'tid_list':results}
+            results = {'tid_list': [item['tid'] for item in results], 'err_list': [item['err'] for item in results]}
+            return results
 
         pass
 
@@ -614,8 +623,9 @@ class Connector(Handler):
             Self: used for chain call.
         """
         args = {'function':function, 'parameters':parameters, 'timeout':timeout}
-        args = ( client, json.dumps(args) )
-        self.batch_pool.append( args )
+        args = {'request':'execute', 'args':args}
+        cmd = ( client, json.dumps(args) )
+        self.batch_pool.append( cmd )
         return self
 
     def batch_wait(self, duration:float):
@@ -659,13 +669,15 @@ class Connector(Handler):
             ##
             if task_list:
                 res = self.handle('batch_execute', task_list)
+                [ UntangledException(e) for e in res['err_list'] if e ]
+                ##
                 res = res['tid_list']
                 res = [ (name,tid) for (name,_),tid in zip(task_list, res) ]
                 tid_list.extend( res )
                 task_list = list() #cleanup
             ##
             if isinstance(item, str) and item=='fetch':
-                res = [ self.handle('fetch', tid, client=name) if tid['tid'] else None
+                res = [ self.handle('fetch', {'tid':tid}, client=name) if tid else None
                     for (name,tid) in tid_list ]
                 outputs.extend( res )
                 tid_list = list() #cleanup

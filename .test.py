@@ -42,7 +42,7 @@ MANIFEST = {
 class TapTestCase(TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = tap.MasterDaemon(tap.SERVER_PORT, tap.IPC_PORT)
+        cls.server = tap.MasterDaemon(tap.SERVER_PORT, tap.IPC_PORT, MANIFEST)
         cls.client = tap.SlaveDaemon(tap.SERVER_PORT, MANIFEST, '127.0.0.1')
         ##
         cls.proc_server = mp.Process(target=cls.server.start)
@@ -90,7 +90,7 @@ class TestManifestFetch(TapTestCase):
         except tap.ClientNotFoundException:
             pass
 
-class TestClientFunctionExecution(TapTestCase):
+class TestClientExecution(TapTestCase):
     def test_no_action(self):
         c = tap.Connector('test')
         tid = c.execute('test_no_action')
@@ -120,7 +120,55 @@ class TestClientFunctionExecution(TapTestCase):
         tid = c.execute('test_command_index')
         time.sleep(0.01)
         c.fetch(tid)
+
+class TestServerClientExecution(TapTestCase):
+    def test_server_only(self):
+        c = tap.Connector()
+        tid = c.execute('test_command_index')
+        time.sleep(0.01)
+        c.fetch(tid)
     
+    def test_server_and_client(self):
+        c1, c2 = tap.Connector(), tap.Connector('test')
+        tid1, tid2 = c1.execute('test_command_index'), c2.execute('test_command_index')
+        time.sleep(0.01)
+        c1.fetch(tid1)
+        c2.fetch(tid2)
+    pass
+
+class TestBatchExecution(TapTestCase):
+    def test_batch_on_server(self):
+        cc = tap.Connector()
+        res = ( cc.batch('', 'test_no_action')
+                  .batch('', 'test_no_parameters')
+                  .batch('', 'test_no_commands')
+                  .batch('', 'test_no_outputs')
+                  .batch('', 'test_command_index')
+                  .batch_wait(0.01)
+                  .batch_fetch()  ).apply()
+        assert(None not in res)
+    
+    def test_batch_on_client(self):
+        cc = tap.Connector()
+        res = ( cc.batch('test', 'test_no_action')
+                  .batch('test', 'test_no_parameters')
+                  .batch('test', 'test_no_commands')
+                  .batch('test', 'test_no_outputs')
+                  .batch('test', 'test_command_index')
+                  .batch_wait(0.01)
+                  .batch_fetch()  ).apply()
+        assert(None not in res)
+
+    def test_batch_mixed(self):
+        cc = tap.Connector()
+        res = ( cc.batch('',     'test_command_index')
+                  .batch('test', 'test_command_index')
+                  .batch_wait(0.01)
+                  .batch_fetch()  ).apply()
+        assert(None not in res)
+
+    pass
+
 
 if __name__=='__main__':
     unittest.main()
