@@ -75,10 +75,13 @@ def _sync(sock:socket.socket, msg):
     _msg = json.loads(_msg)
     return _msg
 
-def _send_file(sock:socket.socket, file_glob:str) -> None:
+def _send_file(sock:socket.socket, name:str, file_glob:str) -> None:
+    client_folder = Path(name)
+    file_glob = (client_folder / file_glob).as_posix()
     file_list = Path(__file__).parent.glob(file_glob)
+    ##
     for _file in file_list:
-        file_name = _file.relative_to( Path.cwd() ).as_posix()
+        file_name = _file.relative_to( client_folder.resolve() ).as_posix()
         print(f'Sending "{file_name}" ... ', end='', flush=True)
         with open(_file, 'rb') as fd:
             fd.seek(0, os.SEEK_END)
@@ -375,8 +378,7 @@ class Handler:
                 raise CodebaseNonExistException(basename)
             ##
             file_glob = codebase[basename]
-            file_glob = (Path(name) / file_glob).as_posix()
-            _send_file(conn, file_glob)
+            _send_file(conn, name, file_glob)
             return {'res':True}
         
         def client(self, args: dict) -> dict:
