@@ -144,8 +144,8 @@ class TestBatchExecution(TapTestCase):
                   .batch('', 'test_no_commands')
                   .batch('', 'test_no_outputs')
                   .batch('', 'test_command_index')
-                  .batch_wait(0.01)
-                  .batch_fetch()  ).apply()
+                  .wait(0.01)
+                  .fetch()  ).apply()
         assert(None not in res)
     
     def test_batch_on_client(self):
@@ -155,18 +155,26 @@ class TestBatchExecution(TapTestCase):
                   .batch('test', 'test_no_commands')
                   .batch('test', 'test_no_outputs')
                   .batch('test', 'test_command_index')
-                  .batch_wait(0.01)
-                  .batch_fetch()  ).apply()
+                  .wait(0.01)
+                  .fetch()  ).apply()
         assert(None not in res)
 
     def test_batch_mixed(self):
         cc = tap.Connector()
         res = ( cc.batch('',     'test_command_index')
                   .batch('test', 'test_command_index')
-                  .batch_wait(0.01)
-                  .batch_fetch()  ).apply()
+                  .wait(0.01)
+                  .fetch()  ).apply()
         assert(None not in res)
 
+    def test_batch_all(self):
+        cc = tap.Connector()
+        task_list = [
+            ('', 'test_command_index'),
+             {'client':'test', 'function':'test_command_index'}
+        ]
+        res = cc.batch_all(task_list).wait(0.01).fetch().apply()
+        assert(None not in res)
     pass
 
 

@@ -37,9 +37,9 @@ outputs = [ c.fetch(tid) for c,tid in zip(conns,tid_list) ] # fetch the results
 params = {'target_addr':'127.0.0.1', 'duration':10}
 results = dict()
 outputs = ( conn.batch('server', 'run-server', params, timeout=11)
-                .batch_wait(1)
+                .wait(1)
                 .batch('client', 'run-client', params, timeout=10)
-                .batch_wait(12)
-                .batch_fetch() ).apply()
+                .wait(12)
+                .fetch() ).apply()
 [ results.update(o) for o in outputs ]
 ```

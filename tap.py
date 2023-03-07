@@ -26,7 +26,7 @@ GEN_TID = lambda: ''.join([random.choice(string.ascii_letters) for _ in range(8)
 SHELL_POPEN = lambda x: sp.Popen(x, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
 SHELL_RUN = lambda x: sp.run(x, stdout=sp.PIPE, stderr=sp.PIPE, check=True, shell=True)
 
-class KeyException(Exception): pass #alias to `KeyError`
+class KeyError(Exception): pass #override `KeyError`
 class StdErrException(Exception): pass
 class TimeoutException(Exception): pass
 class NoResponseException(Exception): pass
@@ -39,7 +39,6 @@ class CodebaseNonExistException(Exception): pass
 class UntangledException(Exception):
     def __init__(self, args):
         err_cls, err_msg = args
-        if err_cls=='KeyError': err_cls='KeyException'
         # err_msg = f'\b:{err_cls} {err_msg}'
         raise eval(err_cls)(err_msg)
     
@@ -355,11 +354,12 @@ class Handler:
             return res
         
         def client(self, args):
-            if 'results' in self.handler.task_pool[ args['tid'] ]:
-                res = self.handler.task_pool[ args['tid'] ]['results']
+            tid = args['tid']
+            if 'results' in self.handler.task_pool[ tid ]:
+                res = self.handler.task_pool[ tid ]['results']
             else:
-                raise NoResponseException(f'{self.handler.name}.')
-            self.handler.task_pool[ args['tid'] ]['handle'].join()
+                raise NoResponseException(f'"{self.handler.name}", tid={tid}.')
+            self.handler.task_pool[ tid ]['handle'].join()
             return res
         pass
 
@@ -548,9 +548,128 @@ class Connector(Handler):
         addr (str): (Optional) Specify the IP address of the server, default as ''.
         port (int): (Optional) Specify the port of the server, default as 52525.
     """
+
+    class BatchExecutor:
+        __slots__ = ['parent', 'pipeline', 'task_list', 'tid_list', 'outputs']
+        def __init__(self, parent):
+            self.parent = parent
+            self._initialize()
+            pass
+
+        def _initialize(self):
+            self.pipeline, self.task_list = list(), list()
+            self.tid_list, self.outputs = list(), list()
+            pass
+
+        def _apply_tasks(self):
+            res = self.parent.handle('batch_execute', self.task_list)
+            [ UntangledException(e) for e in res['err_list'] if e ]
+            ##
+            res = res['tid_list']
+            res = [ (name,tid) for (name,_),tid in zip(self.task_list, res) ]
+            self.tid_list.extend( res )
+            self.task_list = list() #cleanup
+            pass
+
+        def _apply_fetch(self):
+            res = [ self.parent.handle('fetch', {'tid':tid}, client=name) if tid else None
+                        for (name,tid) in self.tid_list ]
+            self.outputs.extend( res )
+            self.tid_list = list() #cleanup
+
+        def _apply_outputs(self):
+            if self.task_list: self._apply_tasks()
+            outputs = self.outputs
+            self._initialize() #cleanup
+            return outputs
+
+        def batch(self, client:str, function:str, parameters:dict={}, timeout:float=-1):
+            """Batch execution by simultaneously sending commands, then use `.apply` to apply send action.
+
+            Args:
+                client (str): The client name (or the server name).
+                function (str): The function names.
+                parameters (dict): The parameters provided for the function. The absent values will use the default values in the manifest.
+                timeout (float): The longest time in seconds waiting for the outputs from function execution.
+            
+            Returns:
+                Self: used for chain call.
+            """
+            args = {'function':function, 'parameters':parameters, 'timeout':timeout}
+            args = {'request':'execute', 'args':args}
+            cmd = ( client, json.dumps(args) )
+            self.pipeline.append(cmd)
+            return self
+
+        def batch_all(self, task_list:list):
+            """Batch all the executions in list format.
+            
+            Args:
+                task_list (list): the executions in list format.
+            
+            Returns:
+                Self: used for chain call.
+            """
+            for task in task_list:
+                if isinstance(task, list):
+                    self.batch(*task)
+                if isinstance(task, dict):
+                    self.batch(**task)
+            return self
+
+        def wait(self, duration:float):
+            """Blocking waiting for some duration (in seconds).
+
+            Args: 
+                duration (float): The waiting time in seconds.
+
+            Returns:
+                Self: used for chain call.
+            """
+            self.pipeline.append(duration)
+            return self
+
+        def fetch(self):
+            """Fetch the batch execution results.
+
+            Args:
+                None.
+            
+            Returns:
+                list: The results in list in the order of batching enqueue sequence.
+            """
+            self.pipeline.append('fetch')
+            return self
+
+        def apply(self):
+            """Apply the batch execution previously defined.
+
+            Args:
+                None.
+            
+            Returns:
+                Self: used for chain call.
+            """
+            while self.pipeline:
+                item = self.pipeline[0] #view
+                if isinstance(item, tuple):                     ## * --> tasks
+                    self.task_list.append(item)
+                else:
+                    if self.task_list: self._apply_tasks()       ## task --> tid
+                    if isinstance(item, str) and item=='fetch': ## tid --> outputs
+                        self._apply_fetch()
+                    elif isinstance(item, float) or isinstance(item, int): ## (await)
+                        time.sleep(item)
+                self.pipeline.pop(0) #pop
+            ##
+            outputs = self._apply_outputs()
+            return outputs
+
+        pass
+    
     def __init__(self, client:str='', addr:str='', port:int=0):
         self.client = client
-        self.batch_pool = list()
+        self.executor = Connector.BatchExecutor(self)
         addr = addr if addr else ''
         port = port if port else IPC_PORT
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -584,6 +703,17 @@ class Connector(Handler):
         """
         return self.handle('info', {'function':function})
     
+    def sync_code(self, basename:str):
+        """Push the codebase on server to the client.
+
+        Args:
+            basename (str): The codebase name.
+        
+        Returns:
+            dict: The response information.
+        """
+        return self.handle('sync_code', {'basename':basename})
+
     def execute(self, function:str, parameters:dict={}, timeout:float=-1) -> str:
         """Execute the function asynchronously, return instantly with task id.
         
@@ -610,7 +740,7 @@ class Connector(Handler):
         """
         return self.handle('fetch', {'tid':tid})
 
-    def batch(self, client:str, function:str, parameters:dict={}, timeout:float=-1):
+    def batch(self, *args, **kwargs):
         """Batch execution by simultaneously sending commands, then use `.apply` to apply send action.
 
         Args:
@@ -622,81 +752,18 @@ class Connector(Handler):
         Returns:
             Self: used for chain call.
         """
-        args = {'function':function, 'parameters':parameters, 'timeout':timeout}
-        args = {'request':'execute', 'args':args}
-        cmd = ( client, json.dumps(args) )
-        self.batch_pool.append( cmd )
-        return self
+        return self.executor.batch(*args, **kwargs)
 
-    def batch_wait(self, duration:float):
-        """Blocking waiting for some duration (in seconds).
-
-        Args: 
-            duration (float): The waiting time in seconds.
-
-        Returns:
-            Self: used for chain call.
-        """
-        self.batch_pool.append(duration)
-        return self
-
-    def batch_fetch(self):
-        """Fetch the batch execution results.
-
-        Args:
-            None.
+    def batch_all(self, *args, **kwargs):
+        """Batch all the executions in list format.
         
-        Returns:
-            list: The results in list in the order of batching enqueue sequence.
-        """
-        self.batch_pool.append('fetch')
-        return self
-    
-    def apply(self):
-        """Apply the batch execution previously defined via `.batch`.
-
         Args:
-            None.
+            task_list (list): the executions in list format.
         
         Returns:
             Self: used for chain call.
         """
-        task_list, tid_list, outputs = list(), list(), list()
-        for item in self.batch_pool:
-            if isinstance(item, tuple):
-                task_list.append( item )
-                continue
-            ##
-            if task_list:
-                res = self.handle('batch_execute', task_list)
-                [ UntangledException(e) for e in res['err_list'] if e ]
-                ##
-                res = res['tid_list']
-                res = [ (name,tid) for (name,_),tid in zip(task_list, res) ]
-                tid_list.extend( res )
-                task_list = list() #cleanup
-            ##
-            if isinstance(item, str) and item=='fetch':
-                res = [ self.handle('fetch', {'tid':tid}, client=name) if tid else None
-                    for (name,tid) in tid_list ]
-                outputs.extend( res )
-                tid_list = list() #cleanup
-                continue
-            if isinstance(item, float) or isinstance(item, int):
-                time.sleep(item)
-                continue
-        return outputs
-
-    def sync_code(self, basename:str):
-        """Push the codebase on server to the client.
-
-        Args:
-            basename (str): The codebase name.
-        
-        Returns:
-            dict: The response information.
-        """
-        return self.handle('sync_code', {'basename':basename})
+        return self.executor.batch_all(*args, **kwargs)
 
     pass
 
