@@ -137,6 +137,9 @@ class TestServerClientExecution(TapTestCase):
     pass
 
 class TestBatchExecution(TapTestCase):
+    def test_batch_empty(self):
+        tap.Connector().apply()
+
     def test_batch_on_server(self):
         cc = tap.Connector()
         res = ( cc.batch('', 'test_no_action')

@@ -648,7 +648,7 @@ class Connector(Handler):
                 None.
             
             Returns:
-                Self: used for chain call.
+                outputs (list): The outputs following the enqueue order of the batched tasks.
             """
             while self.pipeline:
                 item = self.pipeline[0] #view
@@ -764,6 +764,17 @@ class Connector(Handler):
             Self: used for chain call.
         """
         return self.executor.batch_all(*args, **kwargs)
+
+    def apply(self):
+        """Apply the batch execution previously defined.
+
+        Args:
+            None.
+        
+        Returns:
+            outputs (list): The outputs following the enqueue order of the batched tasks.
+        """
+        return self.executor.apply()
 
     pass
 
