@@ -21,6 +21,7 @@ from queue import Queue
 SERVER_PORT = 11112
 IPC_PORT    = 52525
 CHUNK_SIZE  = 4096
+BUFFER_SIZE = 10240
 
 GEN_TID = lambda: ''.join([random.choice(string.ascii_letters) for _ in range(8)])
 SHELL_POPEN = lambda x: sp.Popen(x, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
@@ -196,7 +197,7 @@ class Request:
                 request=_request, client=client, args=json.dumps(args) ).encode()
         self.handler.sock.send(req)
         ## <-- [server]
-        res = self.handler.sock.recv(4096).decode()
+        res = self.handler.sock.recv(BUFFER_SIZE).decode()
         res = json.loads(res)
         if 'err' in res:
             UntangledException(res['err'])
@@ -309,7 +310,7 @@ class Handler:
             req = f'batch_execute {req_args}'.encode()
             self.handler.sock.send(req)
             ## <-- [server]
-            res = self.handler.sock.recv(4096).decode()
+            res = self.handler.sock.recv(BUFFER_SIZE).decode()
             res = json.loads(res)
             if 'err' in res:
                 UntangledException(res['err'])
@@ -496,7 +497,7 @@ class MasterDaemon(Handler):
         ##
         print('IPC Daemon is now on.')
         while True:
-            msg, addr = sock.recvfrom(4096)
+            msg, addr = sock.recvfrom(BUFFER_SIZE)
             cmd, args = msg.decode().split(maxsplit=1)
             ##
             try:
