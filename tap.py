@@ -17,8 +17,6 @@ import threading
 import time
 import traceback
 from queue import Queue
-##
-import psutil
 
 SERVER_PORT = 11112
 IPC_PORT    = 52525
@@ -156,15 +154,17 @@ def _execute(name, task_pool, tid, config, params, timeout) -> None:
             returns = [ proc.poll() for proc in processes ]
             time.sleep(0.001)
         ##
+        err = list()
         for i,ret in enumerate(returns):
             if ret is None:
                 processes[i].kill()
                 processes[i].communicate()
-                raise TimeoutException( f'{name}, [{i}]-th command.' )
+                err.append( TimeoutException(f'{name}, [{i}]-th command.') )
             ##
             if ret != 0:
                 _stderr = processes[i].stderr; assert(not _stderr==None)
-                raise StdErrException( _stderr.read().decode() )
+                err.append( StdErrException(_stderr.read().decode()) )
+        if err: raise err[0] #raise the first error
         ##
         outputs = dict()
         for i,p in enumerate(processes):
