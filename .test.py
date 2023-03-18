@@ -180,6 +180,11 @@ class TestBatchExecution(TapTestCase):
         assert(None not in res)
     pass
 
+class TestReload(TapTestCase):
+    def test_reload(self):
+        tap.Connector().reload()
+        tap.Connector('test').reload()
+
 
 if __name__=='__main__':
     unittest.main()

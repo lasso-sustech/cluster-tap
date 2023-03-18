@@ -276,7 +276,7 @@ class Handler:
             res = self.client(req['args']) if '__server_role__' in req else req
             return res
         def client(self, _args):
-            self.handler.reload()
+            self.handler._reload()
             return {'res':True}
 
     class info(Request):
@@ -408,7 +408,7 @@ class SlaveDaemon(Handler):
         self.task_pool = dict()
         pass
 
-    def reload(self):
+    def _reload(self):
         manifest = open('./manifest.json')
         manifest = json.load( manifest )
         self.manifest = manifest
@@ -471,7 +471,7 @@ class MasterDaemon(Handler):
         self.task_pool = dict()
         pass
 
-    def reload(self):
+    def _reload(self):
         manifest = open('./manifest.json')
         manifest = json.load( manifest )
         self.manifest = manifest
