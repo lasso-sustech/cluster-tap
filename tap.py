@@ -76,7 +76,7 @@ def _sync(sock:socket.socket, msg):
     return _msg
 
 def _send_file(sock:socket.socket, name:str, file_glob:str) -> None:
-    file_list = Path(__file__).parent.glob(file_glob)
+    file_list = Path(__file__).parent.resolve().glob(file_glob)
     ##
     for _file in file_list:
         file_name = _file.relative_to( Path('.').resolve() ).as_posix()
