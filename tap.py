@@ -94,7 +94,7 @@ def _send_file(sock:socket.socket, name:str, file_glob:str) -> None:
                 _send(sock, fd.read(CHUNK_SIZE))
             ## (3) send remains
             _send(sock, fd.read())
-            _send(sock, '') #finalize file sending
+            _send(sock, '@end') #finalize file sending
         print('done.')
     _send(sock, '') #finalize sending
     pass
@@ -110,7 +110,7 @@ def _recv_file(sock:socket.socket, file_glob:str) -> None:
                 ## (2) recv chunks until end
                 while True:
                     _chunk = _recv(sock)
-                    if not _chunk: break
+                    if _chunk==b'@end': break
                     fd.write(_chunk)
                 fd.flush()
                 ## (3) copy to codebase
