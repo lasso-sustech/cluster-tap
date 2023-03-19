@@ -51,9 +51,17 @@ class UntangledException(Exception):
         return (err_cls, err_msg)
     pass
 
+def _fixed_recv(sock:socket.socket, length):
+    data = sock.recv(length)
+    while len(data) < length:
+        remains = sock.recv(length - len(data))
+        if not remains: break
+        data += remains
+    return data
+
 def _recv(sock:socket.socket):
-    _len = struct.unpack('I', sock.recv(4))[0]
-    _msg = sock.recv(_len)
+    _len = struct.unpack('I', _fixed_recv(sock,4))[0]
+    _msg = _fixed_recv(sock,_len)
     return _msg
 
 def _send(sock:socket.socket, msg):
