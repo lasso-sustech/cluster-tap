@@ -42,10 +42,10 @@ class UntangledException(Exception):
         err_cls, err_msg = args
         # err_msg = f'\b:{err_cls} {err_msg}'
         raise eval(err_cls)(err_msg)
-    
+
     @staticmethod
     def format(role:str, e:Exception):
-        err_cls = type(e).__name__ 
+        err_cls = type(e).__name__
         err_msg = '\b:[[{role}]]: {err}\n{tb}'.format(
             role=role, err=str(e), tb=traceback.format_exc() )
         return (err_cls, err_msg)
@@ -190,7 +190,7 @@ def _execute(name, task_pool, tid, config, params, timeout) -> None:
 class Request:
     def __init__(self, handler):
         self.handler = handler
-    
+
     def console(self, args, client='') -> dict:
         '''Default console behavior: [console] <--(bypass)--> [server].'''
         ## --> [server]
@@ -227,11 +227,11 @@ class Request:
             ## <-- [proxy]
             res = client['rx'].get()
         return res
-    
+
     def proxy(self, conn, _name:str, _task_pool:dict, args:str) -> dict:
         '''Default proxy behavior: [proxy] <--(bypass)--> [client].'''
         return _sync(conn, args)
-    
+
     @abstractmethod
     def client(self, args:dict) -> dict: pass
     pass
@@ -357,7 +357,7 @@ class Handler:
             req = super().server(args)
             res = self.client(req['args']) if '__server_role__' in req else req
             return res
-        
+
         def client(self, args):
             tid = args['tid']
             if 'results' in self.handler.task_pool[ tid ]:
@@ -383,7 +383,7 @@ class Handler:
             file_glob = codebase[basename]
             _send_file(conn, name, file_glob)
             return {'res':True}
-        
+
         def client(self, args: dict) -> dict:
             basename = args['basename']
             codebase = self.handler.manifest['codebase']
@@ -547,7 +547,7 @@ class MasterDaemon(Handler):
 
 class Connector(Handler):
     """The IPC broker used to communicate with the tap server, via UDP.
-    
+
     Args:
         client (str): The client name. Leave empty to only query from server.
         addr (str): (Optional) Specify the IP address of the server, default as ''.
@@ -596,7 +596,7 @@ class Connector(Handler):
                 function (str): The function names.
                 parameters (dict): The parameters provided for the function. The absent values will use the default values in the manifest.
                 timeout (float): The longest time in seconds waiting for the outputs from function execution.
-            
+
             Returns:
                 Self: used for chain call.
             """
@@ -608,10 +608,10 @@ class Connector(Handler):
 
         def batch_all(self, task_list:list):
             """Batch all the executions in list format.
-            
+
             Args:
                 task_list (list): the executions in list format.
-            
+
             Returns:
                 Self: used for chain call.
             """
@@ -625,7 +625,7 @@ class Connector(Handler):
         def wait(self, duration:float):
             """Blocking waiting for some duration (in seconds).
 
-            Args: 
+            Args:
                 duration (float): The waiting time in seconds.
 
             Returns:
@@ -639,7 +639,7 @@ class Connector(Handler):
 
             Args:
                 None.
-            
+
             Returns:
                 list: The results in list in the order of batching enqueue sequence.
             """
@@ -651,7 +651,7 @@ class Connector(Handler):
 
             Args:
                 None.
-            
+
             Returns:
                 outputs (list): The outputs following the enqueue order of the batched tasks.
             """
@@ -660,7 +660,7 @@ class Connector(Handler):
                 if isinstance(item, tuple):                     ## * --> tasks
                     self.task_list.append(item)
                 else:
-                    if self.task_list: self._apply_tasks()       ## task --> tid
+                    if self.task_list: self._apply_tasks()      ## task --> tid
                     if isinstance(item, str) and item=='fetch': ## tid --> outputs
                         self._apply_fetch()
                     elif isinstance(item, float) or isinstance(item, int): ## (await)
@@ -671,7 +671,7 @@ class Connector(Handler):
             return outputs
 
         pass
-    
+
     def __init__(self, client:str='', addr:str='', port:int=0):
         self.client = client
         self.executor = Connector.BatchExecutor(self)
@@ -688,10 +688,10 @@ class Connector(Handler):
     def describe(self) -> dict:
         """Return the available functions on the connected client."""
         return self.handle('describe', {})
-    
+
     def reload(self) -> dict:
         """Request remote manifest to reload.
-        
+
         Returns:
             dict: The response information.
         """
@@ -699,21 +699,21 @@ class Connector(Handler):
 
     def info(self, function:str) -> dict:
         """Return the details of the function on the connected client.
-        
+
         Args:
             function (str): The function name.
-        
+
         Returns:
             dict: The dictionary object contains full manifest of the function.
         """
         return self.handle('info', {'function':function})
-    
+
     def sync_code(self, basename:str):
         """Push the codebase on server to the client.
 
         Args:
             basename (str): The codebase name.
-        
+
         Returns:
             dict: The response information.
         """
@@ -721,25 +721,25 @@ class Connector(Handler):
 
     def execute(self, function:str, parameters:dict={}, timeout:float=-1) -> str:
         """Execute the function asynchronously, return instantly with task id.
-        
+
         Args:
             function (str): The function name.
             parameters (dict): The parameters provided for the function. The absent values will use the default values in the manifest.
             timeout (float): The longest time in seconds waiting for the outputs from function execution.
-        
+
         Returns:
             str: The task ID.
         """
         args = { 'function':function, 'parameters':parameters, 'timeout':timeout }
         res = self.handle('execute', args)
         return res['tid']
-    
+
     def fetch(self, tid:str) -> dict:
         """Fetch the previous function execution results with task id.
-        
+
         Args:
             tid (str): Task ID obtained from `Connector.execute`.
-        
+
         Returns:
             dict: the output collected in dictionary struct.
         """
@@ -753,7 +753,7 @@ class Connector(Handler):
             function (str): The function names.
             parameters (dict): The parameters provided for the function. The absent values will use the default values in the manifest.
             timeout (float): The longest time in seconds waiting for the outputs from function execution.
-        
+
         Returns:
             Self: used for chain call.
         """
@@ -761,10 +761,10 @@ class Connector(Handler):
 
     def batch_all(self, *args, **kwargs):
         """Batch all the executions in list format.
-        
+
         Args:
             task_list (list): the executions in list format.
-        
+
         Returns:
             Self: used for chain call.
         """
@@ -775,7 +775,7 @@ class Connector(Handler):
 
         Args:
             None.
-        
+
         Returns:
             outputs (list): The outputs following the enqueue order of the batched tasks.
         """
