@@ -51,6 +51,26 @@ class UntangledException(Exception):
         return (err_cls, err_msg)
     pass
 
+def _frag_recv(sock: socket.socket):
+    _msg = sock.recv(BUFFER_SIZE)
+    _len = struct.unpack('I', _msg[:4])[0]
+    _msg = _msg[4:]
+    ##
+    while len(_msg) < _len:
+        remains = sock.recv(BUFFER_SIZE)
+        _msg += remains
+    return _msg
+
+def _frag_send(sock:socket.socket, msg: bytes, target):
+    _len = struct.pack('I', len(msg))
+    _msg = _len + msg
+    ##
+    _num = len(_msg) // BUFFER_SIZE
+    for i in range(_num):
+        sock.sendto(_msg[i*BUFFER_SIZE:(i+1)*BUFFER_SIZE], target)
+    sock.sendto(_msg[_num*BUFFER_SIZE:], target)
+    pass
+
 def _fixed_recv(sock:socket.socket, length):
     data = sock.recv(length)
     while len(data) < length:
@@ -209,7 +229,8 @@ class Request:
                 request=_request, client=client, args=json.dumps(args) ).encode()
         self.handler.sock.send(req)
         ## <-- [server]
-        res = self.handler.sock.recv(BUFFER_SIZE).decode()
+        # res = self.handler.sock.recv(BUFFER_SIZE).decode()
+        res = _frag_recv(self.handler.sock).decode()
         res = json.loads(res)
         if 'err' in res:
             UntangledException(res['err'])
@@ -322,7 +343,8 @@ class Handler:
             req = f'batch_execute {req_args}'.encode()
             self.handler.sock.send(req)
             ## <-- [server]
-            res = self.handler.sock.recv(BUFFER_SIZE).decode()
+            # res = self.handler.sock.recv(BUFFER_SIZE).decode()
+            res = _frag_recv(self.handler.sock).decode()
             res = json.loads(res)
             if 'err' in res:
                 UntangledException(res['err'])
@@ -518,9 +540,9 @@ class MasterDaemon(Handler):
             except Exception as e:
                 err = { 'err': UntangledException.format('Server', e) }
                 err = json.dumps(err).encode()
-                sock.sendto(err, addr)
+                _frag_send(sock, err, target=addr)
             else:
-                sock.sendto(res, addr)
+                _frag_send(sock, res, target=addr)
             pass
         pass
 
