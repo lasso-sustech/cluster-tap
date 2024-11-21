@@ -215,6 +215,17 @@ def _execute(name, task_pool, tid, config, params, timeout) -> None:
         task_pool[tid]['results'] = results
     pass
 
+def _load_manifest(manifest_file: str, role=''):
+    fd = open(manifest_file)
+    manifest = json.load(fd)
+    ## load fractions
+    role = 'server' if role=='' else role
+    if ('fractions' in manifest) and (role in manifest['fractions']):
+        _manifest = _load_manifest( manifest_file['fractions'][role] )
+        manifest['codebase'].update( _manifest['codebase'] )
+        manifest['functions'].update( _manifest['functions'] )
+    return manifest
+
 class Request:
     def __init__(self, handler):
         self.handler = handler
@@ -430,20 +441,19 @@ class Handler:
     pass
 
 class SlaveDaemon(Handler):
-    def __init__(self, port:int, manifest:dict, addr='', alt_name=''):
+    def __init__(self, port:int, manifest:dict, addr='', alt_name='', manifest_file='./manifest.json'):
         client_name = alt_name if alt_name else manifest['name']
         self.name = client_name if client_name else f'client-{GEN_TID()}'
         self.manifest = manifest
+        self.manifest_file = manifest_file
         ##
         self.addr, self.port = addr, port
         self.task_pool = dict()
         pass
 
     def _reload(self):
-        manifest = open('./manifest.json')
-        manifest = json.load( manifest )
-        self.manifest = manifest
-        print(f'{time.ctime()}: Manifest reloaded.')
+        self.manifest = _load_manifest( self.manifest_file, self.name )
+        print(f'[{time.ctime()}] Manifest reloaded.')
         pass
 
     def auto_detect(self) -> socket.socket:
@@ -493,9 +503,10 @@ class SlaveDaemon(Handler):
     pass
 
 class MasterDaemon(Handler):
-    def __init__(self, port:int, ipc_port:int, manifest={}):
+    def __init__(self, port:int, ipc_port:int, manifest={}, manifest_file='./manifest.json'):
         self.name = ''
         self.manifest = manifest
+        self.manifest_file = manifest_file
         ##
         self.port, self.ipc_port = port, ipc_port
         self.client_pool = dict()
@@ -503,10 +514,8 @@ class MasterDaemon(Handler):
         pass
 
     def _reload(self):
-        manifest = open('./manifest.json')
-        manifest = json.load( manifest )
-        self.manifest = manifest
-        print(f'{time.ctime()}: Manifest reloaded.')
+        self.manifest = _load_manifest( self.manifest_file )
+        print(f'[{time.ctime()}] Manifest reloaded.')
         pass
 
     def proxy_service(self, name, tx:Queue, rx:Queue):
@@ -814,27 +823,29 @@ class Connector(Handler):
     pass
 
 def master_main(args):
+    os.chdir( Path(args.manifest).parent.resolve() )
     try:
-        manifest = open('./manifest.json')
+        manifest = open(args.manifest)
     except:
         manifest = {}
     else:
-        manifest = json.load( manifest )
-    master = MasterDaemon(args.port, args.ipc_port, manifest=manifest)
+        manifest = _load_manifest( args.manifest )
+    master = MasterDaemon(args.port, args.ipc_port, manifest=manifest, manifest_file=args.manifest)
     master.start()
     pass
 
 def slave_main(args):
-    manifest = open('./manifest.json')
-    manifest = json.load( manifest )
+    os.chdir( Path(args.manifest).parent.resolve() )
+    manifest = _load_manifest( args.manifest )
     ##
-    slave = SlaveDaemon(args.port, manifest, args.client, alt_name=args.name)
+    slave = SlaveDaemon(args.port, manifest, args.client, alt_name=args.name, manifest_file=args.manifest)
     slave.start()
     pass
 
 def main():
     parser = argparse.ArgumentParser(description='All-in-one cluster control tap.')
     parser.add_argument('-p', '--port', type=int, nargs='?', default=SERVER_PORT, help='(Optional) server port.')
+    parser.add_argument('--manifest', type=str, nargs='?', default='./manifest.json', help='Path to the Manifest file.')
     ##
     s_group = parser.add_argument_group('Server specific')
     s_group.add_argument('-s', '--server', action='store_true', help='run in server mode.')

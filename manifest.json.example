@@ -1,5 +1,10 @@
 {
     "name": "example",
+    "fractions": {
+        "server": "manifest/server.manifest.json",
+        "client": "manifest/client.manifest.json",
+    }
+
     "codebase": {
         "manifest": "manifest.json",
         "replay_config": "stream-replay/data/manifest.json",
