@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cluster-tap"
-version = "1.0.1"
+version = "1.0.2"
 description = "A simple tool to manage your cluster"
 authors = [
     { name = "sudo_free", email = "ychong@petalmail.com" }
