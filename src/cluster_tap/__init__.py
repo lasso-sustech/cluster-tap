@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-from abc import abstractmethod
-import argparse
-import ipaddress
-import json
-import os
-from pathlib import Path
-import random
-import re
-import shutil
-import socket
-import string
-import struct
-import subprocess as sp
-from tempfile import NamedTemporaryFile
-import threading
-import time
-import traceback
-from queue import Queue
+from .common_imports import *
 
 __all__ = [
     'GEN_TID', 'SHELL_POPEN', 'SHELL_RUN',
@@ -24,7 +7,6 @@ __all__ = [
     'Connector',
 ]
 
-SERVER_PORT = 11112
 IPC_PORT    = 52525
 CHUNK_SIZE  = 4096
 BUFFER_SIZE = 10240
@@ -847,33 +829,3 @@ def slave_main(args):
     slave = SlaveDaemon(args.port, manifest, args.client, alt_name=args.name, manifest_file=args.manifest)
     slave.start()
     pass
-
-def main():
-    parser = argparse.ArgumentParser(description='All-in-one cluster control tap.')
-    parser.add_argument('-p', '--port', type=int, nargs='?', default=SERVER_PORT, help='(Optional) server port.')
-    parser.add_argument('--manifest', type=str, nargs='?', default='./manifest.json', help='Path to the Manifest file.')
-    ##
-    s_group = parser.add_argument_group('Server specific')
-    s_group.add_argument('-s', '--server', action='store_true', help='run in server mode.')
-    s_group.add_argument('--ipc-port', type=int, nargs='?', default=IPC_PORT, help='(Optional) external IPC port.')
-    ##
-    c_group = parser.add_argument_group('Client specific')
-    c_group.add_argument('-c', '--client', type=str, default='', nargs='?', help='run in client mode.')
-    c_group.add_argument('-n', '--name', type=str, default='', nargs='?', help='(Optional) specify custom client name.')
-    ##
-    args = parser.parse_args()
-    if args.client or args.client==None:
-        slave_main(args)
-    elif args.server:
-        master_main(args)
-    else:
-        print('Please specify client mode or server mode.')
-    pass
-
-if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        raise e #pass
-    finally:
-        pass #exit()
