@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cluster-tap"
-version = "1.0.0"
+version = "1.0.1"
 description = "A simple tool to manage your cluster"
 authors = [
     { name = "sudo_free", email = "ychong@petalmail.com" }
@@ -15,3 +15,6 @@ keywords = ["cluster", "lasso-sustech"]
 [project.urls]
 "Homepage" = "https://github.com/lasso-sustech/cluster-tap"
 "Bug Reports" = "https://github.com/lasso-sustech/cluster-tap/issues"
+
+[project.scripts]
+"cluster-tap" = "cluster_tap:main"
