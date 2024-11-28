@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-from .common_imports import *
+import json
+import socket
 
 __all__ = [
     'GEN_TID', 'SHELL_POPEN', 'SHELL_RUN',
@@ -11,9 +12,18 @@ IPC_PORT    = 52525
 CHUNK_SIZE  = 4096
 BUFFER_SIZE = 10240
 
-GEN_TID = lambda: ''.join([random.choice(string.ascii_letters) for _ in range(8)])
-SHELL_POPEN = lambda x: sp.Popen(x, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
-SHELL_RUN = lambda x: sp.run(x, stdout=sp.PIPE, stderr=sp.PIPE, check=True, shell=True)
+def GEN_TID():
+    import random
+    import string
+    return ''.join([random.choice(string.ascii_letters) for _ in range(8)])
+
+def SHELL_POPEN(cmd:str):
+    import subprocess as sp
+    return sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
+
+def SHELL_RUN(cmd:str):
+    import subprocess as sp
+    return sp.run(cmd, stdout=sp.PIPE, stderr=sp.PIPE, check=True, shell=True)
 
 class KeyError(Exception): pass #override `KeyError`
 class StdErrException(Exception): pass
@@ -33,6 +43,8 @@ class UntangledException(Exception):
 
     @staticmethod
     def format(role:str, e:Exception):
+        import traceback
+
         err_cls = type(e).__name__
         err_msg = '\b:[[{role}]]: {err}\n{tb}'.format(
             role=role, err=str(e), tb=traceback.format_exc() )
@@ -40,6 +52,8 @@ class UntangledException(Exception):
     pass
 
 def _frag_recv(sock: socket.socket):
+    import struct
+
     _msg = sock.recv(BUFFER_SIZE)
     _len = struct.unpack('I', _msg[:4])[0]
     _msg = _msg[4:]
@@ -50,6 +64,8 @@ def _frag_recv(sock: socket.socket):
     return _msg
 
 def _frag_send(sock:socket.socket, msg: bytes, target):
+    import struct
+
     _len = struct.pack('I', len(msg))
     _msg = _len + msg
     ##
@@ -68,11 +84,15 @@ def _fixed_recv(sock:socket.socket, length):
     return data
 
 def _recv(sock:socket.socket):
+    import struct
+
     _len = struct.unpack('I', _fixed_recv(sock,4))[0]
     _msg = _fixed_recv(sock,_len)
     return _msg
 
 def _send(sock:socket.socket, msg):
+    import struct
+
     if isinstance(msg, bytes):
         _msg = msg
     elif isinstance(msg, str):
@@ -92,6 +112,9 @@ def _sync(sock:socket.socket, msg):
     return _msg
 
 def _send_file(sock:socket.socket, name:str, file_glob:str) -> None:
+    import os
+    from pathlib import Path
+
     file_list = Path(__file__).parent.resolve().glob(file_glob)
     file_list = filter(lambda x:x.is_file(), file_list)
     ##
@@ -116,6 +139,10 @@ def _send_file(sock:socket.socket, name:str, file_glob:str) -> None:
     pass
 
 def _recv_file(sock:socket.socket, file_glob:str) -> None:
+    from pathlib import Path
+    import shutil
+    from tempfile import NamedTemporaryFile
+
     try:
         sock.settimeout(1.0)
         while True:
@@ -142,6 +169,9 @@ def _recv_file(sock:socket.socket, file_glob:str) -> None:
     pass
 
 def _extract(cmd:str, format:str):
+    import re
+    import subprocess as sp
+
     try:
         ret = SHELL_RUN(cmd).stdout.decode()
     except sp.CalledProcessError as e:
@@ -154,6 +184,8 @@ def _extract(cmd:str, format:str):
     return ret
 
 def _execute(name, task_pool, tid, config, params, timeout) -> None:
+    import time
+
     try:
         timeout = timeout if timeout>=0 else 999
         exec_params = config['parameters'] if 'parameters' in config else {}
@@ -215,6 +247,8 @@ def _load_manifest(manifest_file: str, role=''):
     return manifest
 
 class Request:
+    from abc import abstractmethod
+
     def __init__(self, handler):
         self.handler = handler
 
@@ -325,6 +359,8 @@ class Handler:
             return res
 
         def client(self, args):
+            import threading
+
             params, timeout, fn = args['parameters'], args['timeout'], args['function']
             config = self.handler.manifest['functions'][fn]
             ##
@@ -440,11 +476,16 @@ class SlaveDaemon(Handler):
         pass
 
     def _reload(self):
+        import time
+
         self.manifest = _load_manifest( self.manifest_file, self.name )
         print(f'[{time.ctime()}] Manifest reloaded.')
         pass
 
     def auto_detect(self) -> socket.socket:
+        import ipaddress
+        import re
+
         ## get default gateway
         o = SHELL_RUN('ip route | grep default').stdout.decode()
         iface_name = re.findall('default via (\\S+) dev (\\S+) .*', o)[0][1]
@@ -502,11 +543,15 @@ class MasterDaemon(Handler):
         pass
 
     def _reload(self):
+        import time
+
         self.manifest = _load_manifest( self.manifest_file )
         print(f'[{time.ctime()}] Manifest reloaded.')
         pass
 
-    def proxy_service(self, name, tx:Queue, rx:Queue):
+    def proxy_service(self, name, tx, rx):
+        import struct
+
         while True:
             try:
                 res = self.proxy( name, self.client_pool[name], *rx.get() )
@@ -544,6 +589,9 @@ class MasterDaemon(Handler):
         pass
 
     def serve(self):
+        import threading
+        from queue import Queue
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(('0.0.0.0', self.port))
         sock.listen()
@@ -565,6 +613,8 @@ class MasterDaemon(Handler):
         pass
 
     def start(self):
+        import threading
+
         self.server_thread = threading.Thread(target=self.serve)
         self.server_thread.start()
         self.daemon()
@@ -682,6 +732,8 @@ class Connector(Handler):
             Returns:
                 outputs (list): The outputs following the enqueue order of the batched tasks.
             """
+            import time
+
             while self.pipeline:
                 item = self.pipeline[0] #view
                 if isinstance(item, tuple):                     ## * --> tasks
@@ -811,6 +863,9 @@ class Connector(Handler):
     pass
 
 def master_main(args):
+    import os
+    from pathlib import Path
+
     os.chdir( Path(args.manifest).parent.resolve() )
     try:
         manifest = open(args.manifest)
@@ -823,6 +878,9 @@ def master_main(args):
     pass
 
 def slave_main(args):
+    import os
+    from pathlib import Path
+
     os.chdir( Path(args.manifest).parent.resolve() )
     manifest = _load_manifest( args.manifest )
     ##
