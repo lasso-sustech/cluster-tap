@@ -18,6 +18,12 @@ import time
 import traceback
 from queue import Queue
 
+__all__ = [
+    'GEN_TID', 'SHELL_POPEN', 'SHELL_RUN',
+    'KeyError', 'StdErrException', 'TimeoutException', 'NoResponseException', 'InvalidRequestException', 'AutoDetectFailureException', 'ClientConnectionLossException', 'CodebaseNonExistException', 'UntangledException'
+    'Connector',
+]
+
 SERVER_PORT = 11112
 IPC_PORT    = 52525
 CHUNK_SIZE  = 4096
