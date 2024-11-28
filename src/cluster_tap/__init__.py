@@ -3,7 +3,7 @@ from .common_imports import *
 
 __all__ = [
     'GEN_TID', 'SHELL_POPEN', 'SHELL_RUN',
-    'KeyError', 'StdErrException', 'TimeoutException', 'NoResponseException', 'InvalidRequestException', 'AutoDetectFailureException', 'ClientConnectionLossException', 'CodebaseNonExistException', 'UntangledException'
+    'KeyError', 'StdErrException', 'TimeoutException', 'NoResponseException', 'InvalidRequestException', 'AutoDetectFailureException', 'ClientConnectionLossException', 'CodebaseNonExistException', 'UntangledException',
     'Connector',
 ]
 
