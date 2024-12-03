@@ -240,7 +240,7 @@ def _load_manifest(manifest_file: str, role=''):
     manifest = json.load(fd)
     ## load fractions
     role = 'server' if role=='' else role
-    if ('fractions' in manifest) and (role in manifest['fractions']):
+    if ('fractions' in manifest) and (role in manifest['fractions'].split('_')):
         _manifest = _load_manifest( manifest_file['fractions'][role] )
         manifest['codebase'].update( _manifest['codebase'] )
         manifest['functions'].update( _manifest['functions'] )
