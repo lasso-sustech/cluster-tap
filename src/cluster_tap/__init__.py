@@ -445,8 +445,9 @@ class Handler:
             if basename not in codebase:
                 raise CodebaseNonExistException(basename)
             ##
-            file_glob = codebase[basename]
-            _send_file(conn, name, file_glob)
+            file_globs = codebase[basename]
+            for _glob in file_globs:
+                _send_file(conn, name, _glob)
             return {'res':True}
 
         def client(self, args: dict) -> dict:
@@ -457,8 +458,9 @@ class Handler:
             else:
                 _send(self.handler.sock, {'res':True})
             ##
-            file_glob = codebase[basename]
-            _recv_file(self.handler.sock, file_glob)
+            file_globs = codebase[basename]
+            for _glob in file_globs:
+                _recv_file(self.handler.sock, _glob)
             return {'res':True}
         pass
 
