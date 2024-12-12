@@ -442,10 +442,14 @@ class Handler:
             p_args = json.loads(args)['args']
             basename = p_args['basename']
             codebase = self.handler.manifest['codebase']
-            if basename not in codebase:
-                raise CodebaseNonExistException(basename)
             ##
-            file_globs = codebase[basename]
+            if basename=='*':
+                file_globs = [ y for arr in codebase.values() for y in arr ]
+            elif basename not in codebase:
+                raise CodebaseNonExistException(basename)
+            else:
+                file_globs = codebase[basename]
+            ##
             for _glob in file_globs:
                 _send_file(conn, name, _glob)
             return {'res':True}
@@ -453,12 +457,15 @@ class Handler:
         def client(self, args: dict) -> dict:
             basename = args['basename']
             codebase = self.handler.manifest['codebase']
-            if basename not in codebase:
+            ##
+            if basename=='*':
+                file_globs = [ y for arr in codebase.values() for y in arr ]
+            elif basename not in codebase:
                 raise CodebaseNonExistException(basename)
             else:
-                _send(self.handler.sock, {'res':True})
+                file_globs = codebase[basename]
             ##
-            file_globs = codebase[basename]
+            _send(self.handler.sock, {'res':True})
             for _glob in file_globs:
                 _recv_file(self.handler.sock, _glob)
             return {'res':True}
@@ -861,6 +868,25 @@ class Connector(Handler):
             outputs (list): The outputs following the enqueue order of the batched tasks.
         """
         return self.executor.apply()
+
+    pass
+
+class Helper:
+    @staticmethod
+    def sync_code(client: str = ''):
+        clients = [ Connector(client) ] if client else [ Connector(x) for x in Connector().list_all().keys() ]
+        for conn in clients:
+            conn.sync_code('*')
+            conn.reload()
+        pass
+
+    @staticmethod
+    def warmup(client: str = ''):
+        raise NotImplementedError('Not implemented yet.')
+
+    @staticmethod
+    def check_connectivity():
+        raise NotImplementedError('Not implemented yet.')
 
     pass
 
