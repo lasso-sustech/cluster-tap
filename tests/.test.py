@@ -4,7 +4,7 @@ import time
 import unittest
 from unittest import TestSuite, TestCase
 
-import tap
+import cluster_tap as tap
 
 MANIFEST = {
     "name":"test",

@@ -183,7 +183,7 @@ def _extract(cmd:str, format:str):
         if len(ret)==1: ret=str(ret[0])
     return ret
 
-def _execute(name, task_pool, tid, config, params, timeout) -> None:
+def _execute(name, task_pool, tid, config, params={}, timeout=-1) -> None:
     import time
 
     try:
@@ -241,7 +241,7 @@ def _load_manifest(manifest_file: str, role=''):
     ## load fractions
     role = 'server' if role=='' else role
     if ('fractions' in manifest) and (role in manifest['fractions'].split('_')):
-        _manifest = _load_manifest( manifest_file['fractions'][role] )
+        _manifest = _load_manifest( manifest['fractions'][role] )
         manifest['codebase'].update( _manifest['codebase'] )
         manifest['functions'].update( _manifest['functions'] )
     return manifest
@@ -299,7 +299,7 @@ class Request:
     pass
 
 class Handler:
-    ## console <--> server <--> proxy <--> client
+    ## console <--> server <--> proxy <==> client
     def handle(self, request:str, args, **kwargs) -> dict:
         try:
             handler = getattr(Handler, request)(self)
@@ -351,6 +351,23 @@ class Handler:
             res = self.client(req['args']) if '__server_role__' in req else req
             return res
         pass
+
+    class warmup(Request):
+        def server(self, args):
+            req = super().server(args)
+            res = self.client(req['args']) if '__server_role__' in req else req
+            return res
+        def client(self, _args):
+            import threading
+
+            commands = self.handler.manifest['warmup']
+            config = { 'commands': commands }
+            ##
+            tid = GEN_TID()
+            _thread = threading.Thread(target=_execute, args=(self.handler.name, self.handler.task_pool, tid, config))
+            self.handler.task_pool[tid] = { 'handle':_thread }
+            _thread.start()
+            return { 'tid': tid }
 
     class execute(Request):
         def server(self, args):
@@ -558,7 +575,7 @@ class MasterDaemon(Handler):
         print(f'[{time.ctime()}] Manifest reloaded.')
         pass
 
-    def proxy_service(self, name, tx, rx):
+    def start_proxy_service(self, name, tx, rx):
         import struct
 
         while True:
@@ -576,7 +593,7 @@ class MasterDaemon(Handler):
                 tx.put( res )
         pass
 
-    def daemon(self):
+    def start_daemon_service(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(('', self.ipc_port))
         ##
@@ -612,10 +629,10 @@ class MasterDaemon(Handler):
                 name = json.loads( _recv(conn).decode() )['name']
                 print(f'Client "{name}" connected.')
             except:
-                print(f'malicious connection detected: {addr}.')
+                print(f'Invalid connection detected: {addr}.')
             else:
                 tx, rx = Queue(), Queue()
-                handler = threading.Thread(target=self.proxy_service, args=(name, rx, tx))
+                handler = threading.Thread(target=self.start_proxy_service, args=(name, rx, tx))
                 self.client_pool.update({
                     name:{'handler':handler,'conn':conn,'task_pool':{},'addr':addr,'tx':tx,'rx':rx} })
                 handler.start()
@@ -626,7 +643,7 @@ class MasterDaemon(Handler):
 
         self.server_thread = threading.Thread(target=self.serve)
         self.server_thread.start()
-        self.daemon()
+        self.start_daemon_service()
         pass
 
     pass
@@ -807,6 +824,15 @@ class Connector(Handler):
         """
         return self.handle('sync_code', {'basename':basename})
 
+    def warmup(self) -> str:
+        """Run warmup task
+
+        Returns:
+            str: The warmup task ID.
+        """
+        res = self.handle('warmup', {})
+        return res['tid']
+
     def execute(self, function:str, parameters:dict={}, timeout:float=-1) -> str:
         """Execute the function asynchronously, return instantly with task id.
 
@@ -882,8 +908,21 @@ class Helper:
 
     @staticmethod
     def warmup(client: str = ''):
-        raise NotImplementedError('Not implemented yet.')
+        import time
 
+        clients = [ Connector(client) ] if client else [ Connector(x) for x in Connector().list_all().keys() ]
+        for conn in clients:
+            print(f'Warmup for {conn.client}')
+            tid = conn.warmup()
+            while True:
+                try:
+                    conn.fetch(tid)
+                except:
+                    time.sleep(0.5)
+                else:
+                    break
+        pass
+        
     @staticmethod
     def check_connectivity():
         raise NotImplementedError('Not implemented yet.')
