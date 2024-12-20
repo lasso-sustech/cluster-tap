@@ -12,6 +12,8 @@ IPC_PORT    = 52525
 CHUNK_SIZE  = 4096
 BUFFER_SIZE = 10240
 
+FRAC_MANIFEST_ROOT = './manifest'
+
 def GEN_TID():
     import random
     import string
@@ -236,14 +238,20 @@ def _execute(name, task_pool, tid, config, params={}, timeout=-1) -> None:
     pass
 
 def _load_manifest(manifest_file: str, role=''):
+    from pathlib import Path
+
     fd = open(manifest_file)
     manifest = json.load(fd)
     ## load fractions
-    role = 'server' if role=='' else role
-    if ('fractions' in manifest) and (role in manifest['fractions'].split('_')):
-        _manifest = _load_manifest( manifest['fractions'][role] )
-        manifest['codebase'].update( _manifest['codebase'] )
-        manifest['functions'].update( _manifest['functions'] )
+    roles = role.split('-')
+    if 'fractions' in manifest:
+        for _role in roles:
+            if _role in manifest['fractions']:
+                _frac_file = Path(FRAC_MANIFEST_ROOT, manifest['fractions'][_role]).as_posix()
+                _manifest = _load_manifest( _frac_file )
+                manifest['codebase'].update( _manifest['codebase'] )
+                manifest['functions'].update( _manifest['functions'] )
+                manifest['warmup'].extend( _manifest['warmup'] )
     return manifest
 
 class Request:
